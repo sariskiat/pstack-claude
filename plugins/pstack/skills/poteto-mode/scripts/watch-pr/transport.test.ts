@@ -28,6 +28,7 @@ function run(scenario: string, extra: string[] = []) {
     `#!${process.execPath}
 import { appendFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
+if (args[0] === 'warm') process.exit(0);
 const scenario = process.env.WATCH_FIXTURE;
 appendFileSync(process.env.WATCH_CALLS, JSON.stringify(args) + '\\n');
 if (scenario === 'slow') {
@@ -65,6 +66,7 @@ console.log(JSON.stringify(value));
 `
   );
   chmodSync(gh, 0o755);
+  spawnSync(gh, ["warm"]);
   const entry = join(dir, "entry.ts");
   writeFileSync(
     entry,
