@@ -17,6 +17,7 @@ const LIST_TIMEOUT_MS = 60_000;
 const PAGE_SIZE = 100;
 const PAGE_LIMIT = 10;
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+// Merged and closed PRs drop out of gh's default open-only listing.
 const GITHUB_LIST = [
   "gh",
   "pr",
