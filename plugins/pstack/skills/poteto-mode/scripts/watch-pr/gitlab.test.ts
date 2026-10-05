@@ -606,8 +606,8 @@ describe("pipeline jobs to Check", () => {
   const ROWS: readonly (readonly [JobStatus, Kind, Kind])[] = [
     ["success", "passed", "passed"],
     ["failed", "failed", "skipped"],
-    ["canceled", "failed", "failed"],
-    ["canceling", "failed", "failed"],
+    ["canceled", "failed", "skipped"],
+    ["canceling", "failed", "pending"],
     ["skipped", "skipped", "skipped"],
     ["manual", "pending", "skipped"],
     ["created", "pending", "pending"],
@@ -657,15 +657,37 @@ describe("pipeline jobs to Check", () => {
     ["canceling", "FAILURE"],
     ["created", "PENDING"],
     ["waiting_for_resource", "PENDING"],
+    ["waiting_for_callback", "PENDING"],
     ["preparing", "PENDING"],
     ["pending", "PENDING"],
     ["running", "PENDING"],
     ["scheduled", "PENDING"],
     ["manual", "PENDING"],
   ];
-  test("the pipeline table holds exactly the listed values", () => {
+  const AVAILABLE_STATUSES: readonly PipelineStatus[] = [
+    "created",
+    "waiting_for_resource",
+    "preparing",
+    "waiting_for_callback",
+    "pending",
+    "running",
+    "success",
+    "failed",
+    "canceling",
+    "canceled",
+    "skipped",
+    "manual",
+    "scheduled",
+  ];
+  test("the pipeline and job tables hold exactly the 13 statuses of GitLab 18.11 (Ci::HasStatus::AVAILABLE_STATUSES)", () => {
+    expect(PIPELINES.map(([status]) => status).sort()).toEqual(
+      [...AVAILABLE_STATUSES].sort()
+    );
     expect(Object.keys(ROLLUP_BY_PIPELINE_STATUS).sort()).toEqual(
-      PIPELINES.map(([status]) => status).sort()
+      [...AVAILABLE_STATUSES].sort()
+    );
+    expect(Object.keys(CHECK_BY_JOB_STATUS).sort()).toEqual(
+      [...AVAILABLE_STATUSES].sort()
     );
   });
 
@@ -822,6 +844,52 @@ const SCENARIOS: readonly {
         kind: "waiting",
         pending: [{ name: "pass-job" }],
       });
+    },
+  },
+  {
+    name: "a pipeline waiting for a callback waits instead of failing the read",
+    served: {
+      mr: {
+        ...fixture("mr-running.json"),
+        head_pipeline: {
+          ...fixture("mr-running.json").head_pipeline,
+          status: "waiting_for_callback",
+        },
+      },
+      approvals: fixture("approvals-green.json"),
+      jobs: fixture("jobs-running.json").map(
+        (job: { readonly status: string }) =>
+          job.status === "running"
+            ? { ...job, status: "waiting_for_callback" }
+            : job
+      ),
+    },
+    expect: ({ decision }) => {
+      expect(decision).toMatchObject({
+        kind: "waiting",
+        pending: [{ name: "pass-job", reportedState: "WAITING_FOR_CALLBACK" }],
+      });
+    },
+  },
+  {
+    name: "a canceled job that may fail does not block, as GitLab counts it passed",
+    served: {
+      mr: fixture("mr-green.json"),
+      approvals: fixture("approvals-green.json"),
+      jobs: [
+        ...fixture("jobs-green.json"),
+        {
+          id: 9503491,
+          name: "optional-job",
+          stage: "check",
+          status: "canceled",
+          allow_failure: true,
+          web_url: `https://${HOST}/${PROJECT}/-/jobs/9503491`,
+        },
+      ],
+    },
+    expect: ({ decision }) => {
+      expect(decision.kind).toBe("ready");
     },
   },
   {

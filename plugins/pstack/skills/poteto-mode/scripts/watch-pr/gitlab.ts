@@ -88,8 +88,8 @@ interface JobRow {
 export const CHECK_BY_JOB_STATUS = {
   success: { kind: "passed", allowedToFail: "passed" },
   failed: { kind: "failed", allowedToFail: "skipped" },
-  canceled: { kind: "failed", allowedToFail: "failed" },
-  canceling: { kind: "failed", allowedToFail: "failed" },
+  canceled: { kind: "failed", allowedToFail: "skipped" },
+  canceling: { kind: "failed", allowedToFail: "pending" },
   skipped: { kind: "skipped", allowedToFail: "skipped" },
   manual: { kind: "pending", allowedToFail: "skipped" },
   created: { kind: "pending", allowedToFail: "pending" },
@@ -111,6 +111,7 @@ export const ROLLUP_BY_PIPELINE_STATUS = {
   canceling: "FAILURE",
   created: "PENDING",
   waiting_for_resource: "PENDING",
+  waiting_for_callback: "PENDING",
   preparing: "PENDING",
   pending: "PENDING",
   running: "PENDING",
