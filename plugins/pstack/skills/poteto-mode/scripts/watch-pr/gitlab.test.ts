@@ -13,6 +13,7 @@ import {
 import {
   HOST,
   PROJECT,
+  TARGET_TIP,
   context,
   failure,
   fixture,
@@ -124,9 +125,9 @@ describe("detailed_merge_status to MergeStateStatus", () => {
     "%s is %s",
     (status, expected) => {
       const mr = parseSettledMergeRequest(withStatus("mr-green.json", status));
-      expect(pullRequestFacts(mr, none, context(1)).mergeStateStatus).toBe(
-        expected
-      );
+      expect(
+        pullRequestFacts(mr, none, context(1), TARGET_TIP).mergeStateStatus
+      ).toBe(expected);
     }
   );
 
@@ -208,7 +209,7 @@ describe("detailed_merge_status to MergeStateStatus", () => {
       ...withStatus("mr-green.json", "ci_must_pass"),
       has_conflicts: true,
     });
-    expect(pullRequestFacts(mr, none, context(1))).toMatchObject({
+    expect(pullRequestFacts(mr, none, context(1), TARGET_TIP)).toMatchObject({
       mergeable: "CONFLICTING",
       mergeStateStatus: "BLOCKED",
     });
@@ -219,7 +220,9 @@ describe("detailed_merge_status to MergeStateStatus", () => {
       ...withStatus("mr-green.json", "ci_must_pass"),
       draft: true,
     });
-    expect(pullRequestFacts(mr, none, context(1)).isDraft).toBe(true);
+    expect(pullRequestFacts(mr, none, context(1), TARGET_TIP).isDraft).toBe(
+      true
+    );
   });
 
   test("opened, closed, and merged map to OPEN, CLOSED, and MERGED", () => {
@@ -227,20 +230,23 @@ describe("detailed_merge_status to MergeStateStatus", () => {
       pullRequestFacts(
         parseSettledMergeRequest(fixture("mr-green.json")),
         none,
-        context(1)
+        context(1),
+        TARGET_TIP
       ).state
     ).toBe("OPEN");
     expect(
       pullRequestFacts(
         parseSettledMergeRequest(fixture("mr-closed.json")),
         none,
-        context(10)
+        context(10),
+        null
       ).state
     ).toBe("CLOSED");
     const merged = pullRequestFacts(
       parseSettledMergeRequest(fixture("mr-merged.json")),
       none,
-      context(8)
+      context(8),
+      null
     );
     expect(merged.state).toBe("MERGED");
     expect(merged.mergedAt).not.toBeNull();
@@ -252,16 +258,17 @@ describe("detailed_merge_status to MergeStateStatus", () => {
     ).toThrow(/locked/);
   });
 
-  test("the head, base, and branch fields come from the merge request", () => {
+  test("the head and branch fields come from the merge request, and the base commit is the target tip passed in", () => {
     const facts = pullRequestFacts(
       parseSettledMergeRequest(fixture("mr-green.json")),
       none,
-      context(1)
+      context(1),
+      TARGET_TIP
     );
     const raw = fixture("mr-green.json");
     expect(facts).toMatchObject({
       headRefOid: raw.sha,
-      baseRefOid: raw.diff_refs.base_sha,
+      baseRefOid: TARGET_TIP,
       headRefName: "lane-green",
       baseRefName: "main",
     });
@@ -298,7 +305,8 @@ describe("approvals to ReviewDecision", () => {
     pullRequestFacts(
       parseSettledMergeRequest(withStatus("mr-green.json", status)),
       approvals,
-      context(1)
+      context(1),
+      TARGET_TIP
     ).reviewDecision;
 
   test("no approval on a server that has no approval rules is no decision", () => {
@@ -1272,9 +1280,42 @@ describe("recorded merge requests through the unchanged policy", () => {
     expect(error.failure.retryable).toBe(true);
   });
 
-  test("one poll of an open merge request makes 6 glab calls, all of them reads of the same project", async () => {
+  test("the base commit is the target branch tip, not the merge base, so it moves with the target branch", async () => {
+    const tip = "e".repeat(40);
+    const { row, decision } = await snapshot({
+      ...SCENARIOS[0].served,
+      targetTips: [tip],
+    });
+    expect(fixture("mr-green.json").diff_refs.base_sha).not.toBe(tip);
+    expect(row.facts.baseRefOid).toBe(tip);
+    expect(decision).toMatchObject({
+      kind: "ready",
+      pr: { proof: { revision: { baseRefName: "main", baseRefOid: tip } } },
+    });
+  });
+
+  test("a target branch that moves between the first read and the revision read makes the poll retry", async () => {
+    const error = await rejection(
+      snapshot({
+        ...SCENARIOS[0].served,
+        targetTips: ["e".repeat(40), "f".repeat(40)],
+      })
+    );
+    expect(error.failure).toMatchObject({
+      kind: "snapshot-changed",
+      retryable: true,
+    });
+  });
+
+  test("one poll of an open merge request makes 8 glab calls, all of them reads of the same project", async () => {
     const { calls } = await snapshot(SCENARIOS[0].served);
-    expect(calls).toHaveLength(6);
+    expect(calls).toHaveLength(8);
+    expect(
+      calls.filter(
+        (argv) =>
+          argv[4] === "projects/group%2Fproject/repository/branches/main"
+      )
+    ).toHaveLength(2);
     expect(calls.map((argv) => argv[4].replace(/\?.*/, ""))).toEqual(
       expect.arrayContaining([
         "projects/group%2Fproject/merge_requests/1",
@@ -1421,7 +1462,19 @@ describe("commands never carry a value that was not checked", () => {
       "projects/platform%2Ftools%2Fteam%2Fapp/merge_requests/1",
       "projects/platform%2Ftools%2Fteam%2Fapp/merge_requests/1/approvals",
       "projects/platform%2Ftools%2Fteam%2Fapp/merge_requests/1/reviewers?per_page=100&page=1",
+      "projects/platform%2Ftools%2Fteam%2Fapp/repository/branches/main",
     ]);
+  });
+
+  test("a target branch name is encoded as one path segment in the branch read", async () => {
+    const { reader: glab, calls } = reader({
+      mr: { ...fixture("mr-green.json"), target_branch: "release/1.0?x=#" },
+      approvals: fixture("approvals-green.json"),
+    });
+    await glab.pullRequest(context(1));
+    expect(endpoints(calls)).toContain(
+      "projects/group%2Fproject/repository/branches/release%2F1.0%3Fx%3D%23"
+    );
   });
 
   test("a pipeline id that is not a positive integer is refused before any jobs call", async () => {

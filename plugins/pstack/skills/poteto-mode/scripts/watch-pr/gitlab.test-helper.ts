@@ -8,6 +8,7 @@ import { parsePrNumber } from "./types.ts";
 
 export const HOST = "gitlab.example.com";
 export const PROJECT = "group/project";
+export const TARGET_TIP = "d".repeat(40);
 export const fixture = (name: string) =>
   JSON.parse(
     readFileSync(join(import.meta.dir, "fixtures", "gitlab", name), "utf8")
@@ -36,10 +37,12 @@ export interface Served {
   readonly jobs?: readonly unknown[];
   readonly mrList?: readonly unknown[];
   readonly pipelines?: readonly unknown[];
+  readonly targetTips?: readonly string[];
 }
 
 export function server(served: Served) {
   const calls: string[][] = [];
+  let branchReads = 0;
   const exec = async (argv: readonly string[]): Promise<CommandResult> => {
     calls.push([...argv]);
     const endpoint = argv[4] ?? "";
@@ -48,6 +51,14 @@ export function server(served: Served) {
     const perPage = Number(/(?:^|&)per_page=(\d+)/.exec(query)?.[1] ?? "20");
     const slice = (items: readonly unknown[]): unknown[] =>
       items.slice((page - 1) * perPage, page * perPage);
+    const branch = /\/repository\/branches\/([^/]+)$/.exec(path)?.[1];
+    if (branch !== undefined) {
+      const tips = served.targetTips ?? [TARGET_TIP];
+      return ok({
+        name: decodeURIComponent(branch),
+        commit: { id: tips[Math.min(branchReads++, tips.length - 1)] },
+      });
+    }
     if (/\/merge_requests\/\d+$/.test(path)) return ok(served.mr);
     if (path.endsWith("/approvals")) return ok(served.approvals);
     if (path.endsWith("/reviewers")) return ok(slice(served.reviewers ?? []));

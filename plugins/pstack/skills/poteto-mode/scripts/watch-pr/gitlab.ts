@@ -201,7 +201,6 @@ export interface OpenMergeRequest extends MergeRequestBase {
   readonly sha: string;
   readonly status: DetailedMergeStatus;
   readonly hasConflicts: boolean;
-  readonly baseSha: string;
   readonly headPipeline: HeadPipeline | null;
 }
 export type MergeRequest =
@@ -266,7 +265,6 @@ export function parseSettledMergeRequest(value: unknown): MergeRequest {
     sha,
     status,
     hasConflicts: boolean(mr.has_conflicts, "merge request.has_conflicts"),
-    baseSha: objectId(refs.base_sha, "diff_refs.base_sha"),
     headPipeline: parseHeadPipeline(mr.head_pipeline),
   };
 }
@@ -306,10 +304,12 @@ export function approvalSignal(
   return approvals.approved ? "approved" : "none";
 }
 
+/** `targetTip` is the target branch's head commit, which GitHub's baseRefOid matches; diff_refs only moves when the source branch does. */
 export function pullRequestFacts(
   mr: MergeRequest,
   approvals: Approvals,
-  context: T.PrContext
+  context: T.PrContext,
+  targetTip: string | null
 ): T.PullRequestFacts {
   const open = mr.state === "OPEN";
   return parsePullRequest(
@@ -324,7 +324,7 @@ export function pullRequestFacts(
         ? DECISION_BY_SIGNAL[approvalSignal(mr.status, approvals)]
         : null,
       headRefOid: mr.sha,
-      baseRefOid: open ? mr.baseSha : null,
+      baseRefOid: open ? targetTip : null,
       headRefName: mr.sourceBranch,
       baseRefName: mr.targetBranch,
       state: mr.state,
@@ -685,8 +685,26 @@ export class GlabReader implements T.ForgeReader {
     ]);
     if (mr.state === "OPEN" && mr.headPipeline === null)
       await this.refuseUnlinkedHeadPipeline(context, mr);
+    const targetTip =
+      mr.state === "OPEN" ? await this.targetTip(context, mr) : null;
     this.reads.set(readKey(context), mr);
-    return pullRequestFacts(mr, approvals, context);
+    return pullRequestFacts(mr, approvals, context, targetTip);
+  }
+
+  private async targetTip(
+    context: T.PrContext,
+    mr: OpenMergeRequest
+  ): Promise<string> {
+    const branch = object(
+      await this.api(
+        `${this.projectUrl(context)}/repository/branches/${encodeURIComponent(mr.targetBranch)}`
+      ),
+      "target branch"
+    );
+    return objectId(
+      object(branch.commit, "target branch.commit").id,
+      "target branch.commit.id"
+    );
   }
 
   /** GitLab links a new pipeline to the merge request in a background job, so for a while the head pipeline reads null although it exists. */
@@ -716,7 +734,7 @@ export class GlabReader implements T.ForgeReader {
       {
         headRefOid: mr.sha,
         baseRefName: mr.targetBranch,
-        baseRefOid: mr.baseSha,
+        baseRefOid: await this.targetTip(context, mr),
       },
       context
     );
