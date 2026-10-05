@@ -429,7 +429,7 @@ export const rollupStateFor = (status: PipelineStatus): T.RollupState =>
 
 function pipelineCheck(
   pipeline: HeadPipeline,
-  kind: "failed" | "pending",
+  kind: JobCheckKind,
   description: string
 ): T.Check {
   return {
@@ -442,7 +442,7 @@ function pipelineCheck(
   };
 }
 
-/** The job list never contradicts the pipeline status: a failed trigger job or a config error has no failed job to list. */
+/** The jobs endpoint lists neither trigger jobs nor external commit statuses, and a config error has no job, so the pipeline status fills in what the list misses. */
 export function checksForPipeline(
   jobs: readonly Job[],
   pipeline: HeadPipeline
@@ -451,6 +451,14 @@ export function checksForPipeline(
   const has = (kind: T.Check["kind"]): boolean =>
     checks.some((check) => check.kind === kind);
   const rollup = rollupStateFor(pipeline.status);
+  if (rollup === "SUCCESS" && checks.length === 0)
+    return [
+      pipelineCheck(
+        pipeline,
+        pipeline.status === "skipped" ? "skipped" : "passed",
+        "the pipeline lists no job"
+      ),
+    ];
   if (rollup === "FAILURE" && !has("failed"))
     return [
       ...checks,

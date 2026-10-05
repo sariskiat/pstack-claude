@@ -1099,6 +1099,29 @@ const SCENARIOS: readonly {
       });
     },
   },
+  ...(["success", "skipped"] as const).map((status) => ({
+    name: `a ${status} pipeline that lists no job, such as one with only a trigger job, is READY`,
+    served: {
+      mr: {
+        ...fixture("mr-green.json"),
+        head_pipeline: { ...fixture("mr-green.json").head_pipeline, status },
+      },
+      approvals: fixture("approvals-green.json"),
+      jobs: [],
+    },
+    expect: ({ decision, row }: Awaited<ReturnType<typeof snapshot>>) => {
+      expect(decision.kind).toBe("ready");
+      expect(
+        row.kind === "open" && row.ci.kind !== "ci-none" && row.ci.all
+      ).toEqual([
+        expect.objectContaining({
+          name: "pipeline",
+          kind: status === "success" ? "passed" : "skipped",
+          reportedState: status.toUpperCase(),
+        }),
+      ]);
+    },
+  })),
   {
     name: "a merge request with no pipeline reports no checks",
     served: {
