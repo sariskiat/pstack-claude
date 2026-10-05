@@ -35,6 +35,7 @@ export interface Served {
   readonly discussions?: readonly unknown[];
   readonly jobs?: readonly unknown[];
   readonly mrList?: readonly unknown[];
+  readonly pipelines?: readonly unknown[];
 }
 
 export function server(served: Served) {
@@ -52,6 +53,7 @@ export function server(served: Served) {
     if (path.endsWith("/discussions"))
       return ok(slice(served.discussions ?? []));
     if (path.endsWith("/jobs")) return ok(slice(served.jobs ?? []));
+    if (path.endsWith("/pipelines")) return ok(slice(served.pipelines ?? []));
     if (path.endsWith("/merge_requests")) return ok(slice(served.mrList ?? []));
     return failure(1, `glab: 404 Not found (HTTP 404) ${endpoint}`);
   };

@@ -1165,6 +1165,64 @@ describe("recorded merge requests through the unchanged policy", () => {
     }
   );
 
+  const outcome = (served: Served) =>
+    snapshot(served).then(
+      ({ decision }): object => ({ decision: decision.kind }),
+      (error: unknown): object => {
+        if (error instanceof WatcherQueryError) return error.failure;
+        throw error;
+      }
+    );
+
+  test("a merge request without the head_pipeline key, as a token that cannot read pipelines sees it, fails instead of reading as no CI", async () => {
+    const hidden = fixture("mr-red.json");
+    delete hidden.head_pipeline;
+    expect(
+      await outcome({
+        mr: hidden,
+        approvals: fixture("approvals-green.json"),
+        jobs: fixture("jobs-red.json"),
+      })
+    ).toMatchObject({
+      kind: "forge-unavailable",
+      code: "pipelines-unreadable",
+      retryable: false,
+    });
+  });
+
+  test("a null head pipeline while GitLab lists a pipeline for the head commit waits for that pipeline", async () => {
+    const red = fixture("mr-red.json");
+    const listed = { id: 7, ref: red.source_branch, status: "failed" };
+    expect(
+      await outcome({
+        mr: { ...red, head_pipeline: null },
+        approvals: fixture("approvals-green.json"),
+        pipelines: [
+          { ...listed, id: 8, sha: red.sha },
+          { ...listed, sha: "b".repeat(40) },
+        ],
+      })
+    ).toMatchObject({ kind: "snapshot-changed", retryable: true });
+  });
+
+  test("a null head pipeline with pipelines only for older commits is no CI", async () => {
+    const red = fixture("mr-red.json");
+    expect(
+      await outcome({
+        mr: { ...red, head_pipeline: null },
+        approvals: fixture("approvals-green.json"),
+        pipelines: [
+          {
+            id: 7,
+            sha: "b".repeat(40),
+            ref: red.source_branch,
+            status: "failed",
+          },
+        ],
+      })
+    ).toEqual({ decision: "ready" });
+  });
+
   test("a merge request that GitLab is still preparing retries instead of reporting", async () => {
     const error = await rejection(
       snapshot({

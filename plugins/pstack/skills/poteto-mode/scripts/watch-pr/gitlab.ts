@@ -126,6 +126,7 @@ const PIPELINE_STATUSES = Object.keys(
 const DISCUSSION_PAGE_LIMIT = 50;
 const JOB_PAGE_LIMIT = 10;
 const MERGE_REQUEST_PAGE_LIMIT = 3;
+const PIPELINE_PAGE_LIMIT = 10;
 const PAGE_SIZE = 100;
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
@@ -206,7 +207,12 @@ export type MergeRequest =
   | (MergeRequestBase & { readonly state: "CLOSED" | "MERGED" });
 
 function parseHeadPipeline(value: unknown): HeadPipeline | null {
-  if (value === null || value === undefined) return null;
+  if (value === undefined)
+    throw unavailable(
+      "pipelines-unreadable",
+      "GitLab left head_pipeline out of the merge request, which it does when the glab token cannot read the project's pipelines, so the CI state is unknown. Give the token's user access to pipelines in this project."
+    );
+  if (value === null) return null;
   const pipeline = object(value, "head_pipeline");
   return {
     id: positiveInteger(pipeline.id, "head_pipeline.id"),
@@ -668,8 +674,29 @@ export class GlabReader implements T.ForgeReader {
         this.api(reviewersEndpoint),
       ]).then(([approved, reviewers]) => parseApprovals(approved, reviewers)),
     ]);
+    if (mr.state === "OPEN" && mr.headPipeline === null)
+      await this.refuseUnlinkedHeadPipeline(context, mr);
     this.reads.set(readKey(context), mr);
     return pullRequestFacts(mr, approvals, context);
+  }
+
+  /** GitLab links a new pipeline to the merge request in a background job, so for a while the head pipeline reads null although it exists. */
+  private async refuseUnlinkedHeadPipeline(
+    context: T.PrContext,
+    mr: OpenMergeRequest
+  ): Promise<void> {
+    const pipelines = await this.pages(
+      this.mrUrl(context, "/pipelines"),
+      PIPELINE_PAGE_LIMIT
+    );
+    if (
+      pipelines.some(
+        (pipeline) => object(pipeline, "merge request pipeline").sha === mr.sha
+      )
+    )
+      transient(
+        `GitLab lists a pipeline for the head commit ${mr.sha}, but the merge request does not show it as its head pipeline yet`
+      );
   }
 
   async revision(context: T.PrContext): Promise<LandingRevision> {
