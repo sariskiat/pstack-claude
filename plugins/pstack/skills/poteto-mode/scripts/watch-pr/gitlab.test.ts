@@ -677,7 +677,6 @@ describe("pipeline jobs to Check", () => {
     id: 7,
     status,
     sha: "a".repeat(40),
-    ref: "feature",
     url: `https://${HOST}/${PROJECT}/-/pipelines/7`,
   });
 
@@ -1104,21 +1103,24 @@ describe("recorded merge requests through the unchanged policy", () => {
     expect(error.failure.retryable).toBe(true);
   });
 
-  test("a merged-results pipeline has its own sha and still counts as the head's", async () => {
+  test("a pipeline on a merge ref with another sha is not the head's, so the poll retries", async () => {
     const green = fixture("mr-green.json");
-    const { decision } = await snapshot({
-      mr: {
-        ...green,
-        head_pipeline: {
-          ...green.head_pipeline,
-          sha: "c".repeat(40),
-          ref: "refs/merge-requests/1/merge",
+    const error = await rejection(
+      snapshot({
+        mr: {
+          ...green,
+          head_pipeline: {
+            ...green.head_pipeline,
+            sha: "c".repeat(40),
+            ref: "refs/merge-requests/1/merge",
+          },
         },
-      },
-      approvals: fixture("approvals-green.json"),
-      jobs: fixture("jobs-green.json"),
-    });
-    expect(decision.kind).toBe("ready");
+        approvals: fixture("approvals-green.json"),
+        jobs: fixture("jobs-green.json"),
+      })
+    );
+    expect(error.failure.detail).toContain("has reported checks");
+    expect(error.failure.retryable).toBe(true);
   });
 
   test("one poll of an open merge request makes 6 glab calls, all of them reads of the same project", async () => {

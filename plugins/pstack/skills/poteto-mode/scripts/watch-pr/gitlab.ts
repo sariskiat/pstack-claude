@@ -127,7 +127,6 @@ const JOB_PAGE_LIMIT = 10;
 const MERGE_REQUEST_PAGE_LIMIT = 3;
 const PAGE_SIZE = 100;
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const MERGED_RESULTS_REF = /^refs\/merge-requests\/\d+\/merge$/;
 
 function invalid(detail: string): never {
   throw new WatcherQueryError({ kind: "missing-key", retryable: true, detail });
@@ -183,7 +182,6 @@ export interface HeadPipeline {
   readonly id: number;
   readonly status: PipelineStatus;
   readonly sha: string;
-  readonly ref: string;
   readonly url: string;
 }
 
@@ -213,7 +211,6 @@ function parseHeadPipeline(value: unknown): HeadPipeline | null {
     id: positiveInteger(pipeline.id, "head_pipeline.id"),
     status: oneOf(pipeline.status, PIPELINE_STATUSES, "head_pipeline.status"),
     sha: text(pipeline.sha, "head_pipeline.sha"),
-    ref: text(pipeline.ref, "head_pipeline.ref"),
     url: optionalText(pipeline.web_url, "head_pipeline.web_url") ?? "",
   };
 }
@@ -470,13 +467,6 @@ export function checksForPipeline(
   return checks;
 }
 
-export function pipelineIsForHead(
-  mr: OpenMergeRequest,
-  pipeline: HeadPipeline
-): boolean {
-  return pipeline.sha === mr.sha || MERGED_RESULTS_REF.test(pipeline.ref);
-}
-
 function parseBody(stdout: string, endpoint: string): unknown {
   try {
     return JSON.parse(stdout);
@@ -720,7 +710,7 @@ export class GlabReader implements T.ForgeReader {
     if (
       mr.state !== "OPEN" ||
       mr.headPipeline === null ||
-      !pipelineIsForHead(mr, mr.headPipeline)
+      mr.headPipeline.sha !== mr.sha
     )
       return { kind: "none-reported" };
     const jobs = (
@@ -760,8 +750,8 @@ export class GlabReader implements T.ForgeReader {
       oid: mr.headPipeline.sha,
       state: rollupStateFor(mr.headPipeline.status),
     };
-    return pipelineIsForHead(mr, mr.headPipeline)
-      ? [{ oid: mr.sha, state: reported.state }]
+    return reported.oid === mr.sha
+      ? [reported]
       : [{ oid: mr.sha, state: null }, reported];
   }
 }
