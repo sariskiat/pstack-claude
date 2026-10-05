@@ -1341,6 +1341,29 @@ describe("lists longer than one page", () => {
     });
   });
 
+  test("the 101st reviewer is read, so a request for changes there blocks", async () => {
+    const reviewer = (n: number, state: string) => ({
+      user: { id: n, username: "user" },
+      state,
+      created_at: "2026-10-06T02:49:10.531+07:00",
+    });
+    const { decision } = await snapshot({
+      mr: fixture("mr-green.json"),
+      approvals: fixture("approvals-green.json"),
+      jobs: fixture("jobs-green.json"),
+      reviewers: [
+        ...Array.from({ length: 100 }, (_, index) =>
+          reviewer(index + 1, "unreviewed")
+        ),
+        reviewer(101, "requested_changes"),
+      ],
+    });
+    expect(decision).toMatchObject({
+      kind: "blocker",
+      blocker: { kind: "merge-gate", reason: "changes-requested" },
+    });
+  });
+
   test("the 101st job is read, so a failed job there blocks", async () => {
     const { decision } = await snapshot({
       mr: fixture("mr-red.json"),
@@ -1397,7 +1420,7 @@ describe("commands never carry a value that was not checked", () => {
     expect(endpoints(calls)).toEqual([
       "projects/platform%2Ftools%2Fteam%2Fapp/merge_requests/1",
       "projects/platform%2Ftools%2Fteam%2Fapp/merge_requests/1/approvals",
-      "projects/platform%2Ftools%2Fteam%2Fapp/merge_requests/1/reviewers",
+      "projects/platform%2Ftools%2Fteam%2Fapp/merge_requests/1/reviewers?per_page=100&page=1",
     ]);
   });
 

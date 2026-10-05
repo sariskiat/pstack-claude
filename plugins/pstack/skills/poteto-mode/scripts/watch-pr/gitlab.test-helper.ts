@@ -45,11 +45,12 @@ export function server(served: Served) {
     const endpoint = argv[4] ?? "";
     const [path, query = ""] = endpoint.split("?");
     const page = Number(/(?:^|&)page=(\d+)/.exec(query)?.[1] ?? "1");
+    const perPage = Number(/(?:^|&)per_page=(\d+)/.exec(query)?.[1] ?? "20");
     const slice = (items: readonly unknown[]): unknown[] =>
-      items.slice((page - 1) * 100, page * 100);
+      items.slice((page - 1) * perPage, page * perPage);
     if (/\/merge_requests\/\d+$/.test(path)) return ok(served.mr);
     if (path.endsWith("/approvals")) return ok(served.approvals);
-    if (path.endsWith("/reviewers")) return ok(served.reviewers ?? []);
+    if (path.endsWith("/reviewers")) return ok(slice(served.reviewers ?? []));
     if (path.endsWith("/discussions"))
       return ok(slice(served.discussions ?? []));
     if (path.endsWith("/jobs")) return ok(slice(served.jobs ?? []));

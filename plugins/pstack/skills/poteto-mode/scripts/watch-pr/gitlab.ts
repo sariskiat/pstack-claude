@@ -127,6 +127,7 @@ const DISCUSSION_PAGE_LIMIT = 50;
 const JOB_PAGE_LIMIT = 10;
 const MERGE_REQUEST_PAGE_LIMIT = 3;
 const PIPELINE_PAGE_LIMIT = 10;
+const REVIEWER_PAGE_LIMIT = 10;
 const PAGE_SIZE = 100;
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
@@ -670,12 +671,11 @@ export class GlabReader implements T.ForgeReader {
   async pullRequest(context: T.PrContext): Promise<T.PullRequestFacts> {
     const mrEndpoint = this.mrUrl(context);
     const approvalsEndpoint = this.mrUrl(context, "/approvals");
-    const reviewersEndpoint = this.mrUrl(context, "/reviewers");
     const [mr, approvals] = await Promise.all([
       this.api(mrEndpoint).then(parseSettledMergeRequest),
       Promise.all([
         this.api(approvalsEndpoint),
-        this.api(reviewersEndpoint),
+        this.pages(this.mrUrl(context, "/reviewers"), REVIEWER_PAGE_LIMIT),
       ]).then(([approved, reviewers]) => parseApprovals(approved, reviewers)),
     ]);
     if (mr.state === "OPEN" && mr.headPipeline === null)
