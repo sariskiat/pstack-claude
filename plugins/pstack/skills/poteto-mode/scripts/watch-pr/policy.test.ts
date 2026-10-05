@@ -64,7 +64,7 @@ describe("readiness truth table", () => {
     ];
     for (const [mergeStateStatus, headRollupState, expected] of cases) {
       expect(
-        assessGitHubMerge({ mergeStateStatus, headRollupState }).kind,
+        assessGitHubMerge({ mergeStateStatus, headRollupState }).kind
       ).toBe(expected);
     }
   });
@@ -147,7 +147,7 @@ describe("snapshot query planning", () => {
           pendingHistory: "include",
           allowDraft: false,
         })
-      ).kind,
+      ).kind
     ).toBe("merged");
     expect(reader.calls).toEqual(["pullRequest"]);
   });
@@ -321,7 +321,7 @@ describe("queued-stack cadence", () => {
       state,
       await openSnapshot(queue[0]),
       0,
-      options,
+      options
     );
     expect(first.completedSweepRows).toBeNull();
     state = first.state;
@@ -329,10 +329,10 @@ describe("queued-stack cadence", () => {
       state,
       await openSnapshot(queue[1]),
       5,
-      options,
+      options
     );
     expect(
-      second.completedSweepRows?.map((row) => Number(row.context.number)),
+      second.completedSweepRows?.map((row) => Number(row.context.number))
     ).toEqual([30, 31]);
     expect(second.state.nextSweepAt).toBe(305);
   });
@@ -403,7 +403,7 @@ describe("queued-stack cadence", () => {
       state,
       await openSnapshot(queue[0]),
       0,
-      options,
+      options
     ).state;
     const first = evaluateQueue(state, options);
     expect(first.kind).toBe("waiting");
@@ -427,7 +427,10 @@ describe("review gate", () => {
   it("blocks on a required review instead of reporting a blocked PR ready", async () => {
     const snapshot = await readSnapshot({
       reader: fakeReader({
-        facts: { reviewDecision: "REVIEW_REQUIRED", mergeStateStatus: "BLOCKED" },
+        facts: {
+          reviewDecision: "REVIEW_REQUIRED",
+          mergeStateStatus: "BLOCKED",
+        },
       }),
       context: context(23),
       pendingHistory: "omit",
@@ -435,10 +438,14 @@ describe("review gate", () => {
     });
     expect(classifyPr(snapshot)).toEqual({
       kind: "blocker",
-      blocker: { kind: "merge-gate", pr: context(23), reason: "review-required" },
+      blocker: {
+        kind: "merge-gate",
+        pr: context(23),
+        reason: "review-required",
+      },
     });
     expect(
-      selectTierMajorStackDecision([snapshot] as NonEmpty<typeof snapshot>),
+      selectTierMajorStackDecision([snapshot] as NonEmpty<typeof snapshot>)
     ).toMatchObject({
       kind: "blocker",
       blocker: { kind: "merge-gate", reason: "review-required" },
@@ -461,7 +468,10 @@ describe("review gate", () => {
   it("waits for pending checks before reporting the review gate", async () => {
     const snapshot = await readSnapshot({
       reader: fakeReader({
-        facts: { reviewDecision: "REVIEW_REQUIRED", mergeStateStatus: "BLOCKED" },
+        facts: {
+          reviewDecision: "REVIEW_REQUIRED",
+          mergeStateStatus: "BLOCKED",
+        },
         fastPath: { kind: "checks", checks: [pendingCheck()] },
       }),
       context: context(26),
@@ -474,7 +484,10 @@ describe("review gate", () => {
   it("still reports changes requested as a merge-gate blocker", async () => {
     const snapshot = await readSnapshot({
       reader: fakeReader({
-        facts: { reviewDecision: "CHANGES_REQUESTED", mergeStateStatus: "BLOCKED" },
+        facts: {
+          reviewDecision: "CHANGES_REQUESTED",
+          mergeStateStatus: "BLOCKED",
+        },
       }),
       context: context(25),
       pendingHistory: "omit",
@@ -527,7 +540,10 @@ describe("a PR with no checks configured", () => {
         { facts: { mergeStateStatus: "BLOCKED" } },
         { kind: "merge-gate", reason: "merge-blocked" },
       ],
-      [{ facts: { isDraft: true } }, { kind: "merge-gate", reason: "draft-pr" }],
+      [
+        { facts: { isDraft: true } },
+        { kind: "merge-gate", reason: "draft-pr" },
+      ],
     ] as const;
     for (const [overrides, blocker] of cases)
       expect(classifyPr(await read(overrides))).toMatchObject({

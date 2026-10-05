@@ -1,5 +1,15 @@
 import { describe, expect, it } from "bun:test";
-import { orderStack, parsePullRequest, WatcherQueryError } from "./github.ts";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ForgeError } from "../forge/forge.ts";
+import { WatchDeadline } from "./deadline.ts";
+import {
+  GhGitHubReader,
+  orderStack,
+  parsePullRequest,
+  WatcherQueryError,
+} from "./github.ts";
 import {
   parseContext,
   parseLandingRevision,
@@ -264,5 +274,81 @@ describe("renderStatusTable builds the link from the row's host and path", () =>
     expect(renderStatusTable([closed(nested)])).toContain(
       "[#42](https://gitlab.example.com/g/sub/p/pull/42)"
     );
+  });
+});
+
+describe("a repository named .github and the shared segment rule", () => {
+  it("parseContext accepts .github, and rejects dot segments, a leading dash, and .git", () => {
+    expect(
+      parseContext({ host: "github.com", path: "acme/.github", number: 1 }).path
+    ).toBe("acme/.github");
+    expect(
+      parseContext({ owner: "acme", repo: ".github", number: 1 }).path
+    ).toBe("acme/.github");
+    for (const path of ["a/.", "a/..", "./b", "../b", "a/-x", "-a/b", "a/.git"])
+      expect(() =>
+        parseContext({ host: "github.com", path, number: 1 })
+      ).toThrow(WatcherQueryError);
+  });
+
+  it("the legacy owner and repo branch rejects options, dots, and .git", () => {
+    for (const [owner, repo] of [
+      ["--x", "r"],
+      ["o", "--x"],
+      ["..", "r"],
+      ["o", ".."],
+      ["o", "."],
+      ["o", ".git"],
+      [".git", "r"],
+    ])
+      expect(() => parseContext({ owner, repo, number: 1 })).toThrow(
+        WatcherQueryError
+      );
+  });
+});
+
+describe("a record for another forge never reaches gh", () => {
+  const gitlab: PrContext = {
+    host: "gitlab.cjexpress.io",
+    path: "g/p",
+    number,
+  };
+
+  it("GhShippingService.inspect rejects a non-github host without running gh", async () => {
+    const calls: string[][] = [];
+    const service = new GhShippingService(async (argv) => {
+      calls.push([...argv]);
+      return {};
+    });
+    await expect(service.inspect(gitlab)).rejects.toMatchObject({
+      name: "ForgeError",
+      code: "not-github-host",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("GhGitHubReader rejects a non-github host before running gh", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "forge-gh-"));
+    const saved = process.env.PATH;
+    const marker = join(dir, "ran");
+    try {
+      await writeFile(
+        join(dir, "gh"),
+        `#!/bin/sh\necho x > ${marker}\necho '{}'\n`
+      );
+      await chmod(join(dir, "gh"), 0o755);
+      process.env.PATH = `${dir}:${saved}`;
+      const reader = new GhGitHubReader(new WatchDeadline(0, () => 0));
+      await expect(reader.pullRequest(gitlab)).rejects.toBeInstanceOf(
+        ForgeError
+      );
+      await expect(reader.checkRollupPage(gitlab, null)).rejects.toBeInstanceOf(
+        ForgeError
+      );
+      expect(await Bun.file(marker).exists()).toBe(false);
+    } finally {
+      process.env.PATH = saved;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

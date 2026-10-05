@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -277,5 +277,133 @@ describe("detectForgeEnv glab cost", () => {
       const forge = await detectForgeEnv(GITLAB);
       expect(forge.gitlabHosts).toEqual([GITLAB]);
     });
+  });
+});
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+async function pidFrom(file: string): Promise<number> {
+  for (let i = 0; i < 50; i++) {
+    const text = await readFile(file, "utf8").catch(() => "");
+    if (text.trim() !== "") return Number(text.trim());
+    await Bun.sleep(20);
+  }
+  throw new Error("fake binary never wrote its pid");
+}
+
+describe("a timed-out glab leaves no process behind", () => {
+  async function withGlab(
+    body: (pidFile: string) => string,
+    run: (pidFile: string) => Promise<void>
+  ): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), "forge-kill-"));
+    const saved = process.env.PATH;
+    const pidFile = join(dir, "pid");
+    try {
+      await writeFile(
+        join(dir, "glab"),
+        `#!/bin/sh\n[ "$1" = warm ] && exit 0\n${body(pidFile)}\n`
+      );
+      await chmod(join(dir, "glab"), 0o755);
+      await Bun.spawn([join(dir, "glab"), "warm"]).exited;
+      process.env.PATH = `${dir}:${saved}`;
+      await run(pidFile);
+    } finally {
+      process.env.PATH = saved;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("the direct child is dead after the call", async () => {
+    await withGlab(
+      (pidFile) => `echo $$ > ${pidFile}\nexec sleep 62`,
+      async (pidFile) => {
+        await detectForgeEnv(GITLAB, { glabTimeoutMs: 300 });
+        const pid = await pidFrom(pidFile);
+        await Bun.sleep(100);
+        expect(alive(pid)).toBe(false);
+      }
+    );
+  });
+
+  test("a grandchild of a wrapper script is dead after the call", async () => {
+    await withGlab(
+      (pidFile) => `sh -c 'echo $$ > ${pidFile}; exec sleep 62' &\nwait`,
+      async (pidFile) => {
+        await detectForgeEnv(GITLAB, { glabTimeoutMs: 300 });
+        const pid = await pidFrom(pidFile);
+        await Bun.sleep(100);
+        const stillAlive = alive(pid);
+        if (stillAlive) process.kill(pid, "SIGKILL");
+        expect(stillAlive).toBe(false);
+      }
+    );
+  });
+});
+
+describe("one segment rule and one host rule for remotes", () => {
+  test("a repository named .github is a valid segment", () => {
+    expect(parseRemoteUrl("https://github.com/acme/.github.git").path).toBe(
+      "acme/.github"
+    );
+    expect(parseRemoteUrl("git@github.com:acme/.github").path).toBe(
+      "acme/.github"
+    );
+  });
+
+  test("a segment that is an option, a dot, or holds control, space, or encoded slash text is unparseable", () => {
+    for (const path of [
+      "a/%0A/b",
+      "a/%00/b",
+      "a/b%20c",
+      "a/--flag",
+      "a/-x",
+      "a/%2F/b",
+      "a/%2f/b",
+      "a/../b",
+      "a/b/..",
+    ])
+      expect(
+        failure(() => parseRemoteUrl(`https://gitlab.cjexpress.io/${path}`))
+          .code
+      ).toBe("unparseable-remote");
+  });
+
+  test("an scp remote with a bad segment is unparseable", () => {
+    for (const path of ["a/--flag", "a/b c", "a/../b"])
+      expect(
+        failure(() => parseRemoteUrl(`git@gitlab.cjexpress.io:${path}`)).code
+      ).toBe("unparseable-remote");
+  });
+
+  test("an scp or url host that is not a hostname is unparseable", () => {
+    for (const remote of [
+      "git@[::1]:a/b",
+      "-oProxyCommand=x:a/b",
+      "git@-bad.io:a/b",
+      "https://[::1]/a/b",
+    ])
+      expect(failure(() => parseRemoteUrl(remote)).code).toBe(
+        "unparseable-remote"
+      );
+  });
+
+  test("errors never echo the raw remote or path", () => {
+    const remote = "https://gitlab.cjexpress.io/a/%0Aevil/b";
+    const error = failure(() => parseRemoteUrl(remote));
+    expect(error.message).not.toContain("evil");
+    expect(error.message).not.toContain("\n");
+    const path = failure(() =>
+      ownerAndName({ host: "github.com", path: "a/b/\nINJECT" })
+    );
+    expect(path.message).not.toContain("INJECT");
+    expect(path.message).not.toContain("\n");
   });
 });

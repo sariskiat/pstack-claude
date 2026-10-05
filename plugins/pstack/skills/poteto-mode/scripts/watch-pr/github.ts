@@ -3,7 +3,11 @@ import { spawn } from "node:child_process";
 import { DeadlineExceeded, type WatchDeadline } from "./deadline.ts";
 import type * as T from "./types.ts";
 import { nonEmpty, parsePrNumber } from "./types.ts";
-import { GITHUB_HOST, ownerAndName } from "../forge/forge.ts";
+import {
+  GITHUB_HOST,
+  githubOwnerAndName,
+  requireGithub,
+} from "../forge/forge.ts";
 export const REVIEW_THREADS_QUERY = `query ReviewThreads($owner: String!, $repo: String!, $pr: Int!, $after: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $pr) {
@@ -499,7 +503,7 @@ function graphqlArgs(
   query: string,
   context: T.PrContext
 ): [string, ...string[]] {
-  const { owner, name } = ownerAndName(context);
+  const { owner, name } = githubOwnerAndName(context);
   return [
     "gh",
     "api",
@@ -546,7 +550,7 @@ export class GhGitHubReader implements T.GitHubReader {
         "view",
         String(context.number),
         "--repo",
-        context.path,
+        requireGithub(context).path,
         "--json",
         "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,baseRefOid,state,mergedAt,isDraft",
       ]),
@@ -561,7 +565,7 @@ export class GhGitHubReader implements T.GitHubReader {
         "view",
         String(context.number),
         "--repo",
-        context.path,
+        requireGithub(context).path,
         "--json",
         "headRefOid,baseRefName,baseRefOid",
       ]),
@@ -577,7 +581,7 @@ export class GhGitHubReader implements T.GitHubReader {
       "pr",
       "list",
       "--repo",
-      repository.path,
+      requireGithub(repository).path,
       "--state",
       "open",
       "--limit",
@@ -622,7 +626,7 @@ export class GhGitHubReader implements T.GitHubReader {
       "checks",
       String(context.number),
       "--repo",
-      context.path,
+      requireGithub(context).path,
       "--json",
       "name,state,description,link,workflow,bucket",
     ]);
@@ -792,7 +796,7 @@ export async function resolveContext(args: {
   if (args.pr !== null) {
     const origin = await args.reader.originRepo();
     if (origin !== null) {
-      const local = ownerAndName(origin);
+      const local = githubOwnerAndName(origin);
       return {
         ...project(args.owner ?? local.owner, args.repo ?? local.name),
         number: args.pr,
@@ -800,7 +804,7 @@ export async function resolveContext(args: {
     }
   }
   const inferred = await args.reader.currentPr(args.pr);
-  const current = ownerAndName(inferred);
+  const current = githubOwnerAndName(inferred);
   if (args.pr === null) {
     // The checkout's PR number means nothing in another repository.
     const found = inferred.path;

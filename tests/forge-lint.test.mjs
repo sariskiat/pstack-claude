@@ -188,8 +188,65 @@ test("baselineAllowlist reads the allowlist at the merge base with a ref", () =>
     git(root, "branch", "lint-base");
     writeFileSync(join(root, "tools/forge-lint.mjs"), lintSource({ "a.md": 9, "b.md": 1 }));
     git(root, "commit", "-q", "-am", "raise a.md");
-    assert.equal(baselineAllowlist(root, "empty-base"), null);
+    assert.deepEqual(baselineAllowlist(root, "empty-base"), { "a.md": 3, "b.md": 1 });
     assert.deepEqual(baselineAllowlist(root, "lint-base"), { "a.md": 3, "b.md": 1 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function initRepo(root) {
+  git(root, "init", "-q", "-b", "main");
+  git(root, "config", "user.email", "t@example.com");
+  git(root, "config", "user.name", "t");
+  mkdirSync(join(root, "tools"), { recursive: true });
+}
+
+function commitLint(root, counts, message) {
+  writeFileSync(join(root, "tools/forge-lint.mjs"), lintSource(counts));
+  git(root, "add", "-A");
+  git(root, "commit", "-q", "-m", message);
+}
+
+test("a base without the lint file falls back to the ancestors on the branch, so a stack child cannot raise a count", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-lint-walk-"));
+  try {
+    initRepo(root);
+    writeFileSync(join(root, "README"), "x\n");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "trunk without lint");
+    git(root, "checkout", "-q", "-b", "f1");
+    commitLint(root, { "a.md": 5, "b.md": 2 }, "f1 adds lint");
+    git(root, "checkout", "-q", "-b", "child");
+    writeFileSync(join(root, "note"), "n\n");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "child unrelated");
+    commitLint(root, { "a.md": 9, "b.md": 2 }, "child raises a.md");
+    const baseline = baselineAllowlist(root, "main");
+    assert.deepEqual(baseline, { "a.md": 5, "b.md": 2 });
+    mkdirSync(join(root, SCRIPTS), { recursive: true });
+    assert.match(
+      check(root, { "a.md": 9, "b.md": 2 }, baseline).problems.join("\n"),
+      /a\.md: allowlist 9 is above 5/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("when no ancestor has the lint file the branch that adds it passes, and a missing ref still throws", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-lint-add-"));
+  try {
+    initRepo(root);
+    writeFileSync(join(root, "README"), "x\n");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "trunk without lint");
+    git(root, "checkout", "-q", "-b", "f1");
+    writeFileSync(join(root, "note"), "n\n");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "no lint yet");
+    assert.equal(baselineAllowlist(root, "main"), null);
+    assert.throws(() => baselineAllowlist(root, "no-such-ref"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

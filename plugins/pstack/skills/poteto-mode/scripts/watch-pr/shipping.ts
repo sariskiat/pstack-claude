@@ -8,7 +8,7 @@ import {
   sameLandingRevision,
   type LandingRevision,
 } from "./landing.ts";
-import { ownerAndName } from "../forge/forge.ts";
+import { githubOwnerAndName } from "../forge/forge.ts";
 import type { PrContext } from "./types.ts";
 
 export interface LandingRecord {
@@ -140,7 +140,7 @@ export class GhShippingService implements ShippingService {
   ) {}
 
   async inspect(context: PrContext): Promise<LandingRecord> {
-    const { owner, name } = ownerAndName(context);
+    const { owner, name } = githubOwnerAndName(context);
     const response = data(
       await this.execute([
         "gh",

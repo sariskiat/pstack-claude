@@ -89,15 +89,31 @@ export function baselineAllowlist(root, ref) {
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
   const base = git("merge-base", "HEAD", ref);
-  let source;
-  try {
-    source = git("show", `${base}:tools/forge-lint.mjs`);
-  } catch {
-    return null;
-  }
-  const literal = ALLOWLIST_LITERAL.exec(source);
-  if (literal === null) throw new Error(`no ALLOWLIST literal in tools/forge-lint.mjs at ${base}`);
-  return JSON.parse(literal[1].replace(/,\s*\}$/, "}"));
+  const allowlistAt = (commit) => {
+    let source;
+    try {
+      source = git("show", `${commit}:tools/forge-lint.mjs`);
+    } catch {
+      return null;
+    }
+    const literal = ALLOWLIST_LITERAL.exec(source);
+    if (literal === null) throw new Error(`no ALLOWLIST literal in tools/forge-lint.mjs at ${commit}`);
+    return JSON.parse(literal[1].replace(/,\s*\}$/, "}"));
+  };
+  const atBase = allowlistAt(base);
+  if (atBase !== null) return atBase;
+  const versions = git("rev-list", "--first-parent", `${ref}..HEAD`)
+    .split("\n")
+    .filter(Boolean)
+    .map(allowlistAt)
+    .filter((version) => version !== null);
+  if (versions.length === 0) return null;
+  const lowest = {};
+  for (const version of versions)
+    for (const file of Object.keys(version)) lowest[file] ??= Infinity;
+  for (const file of Object.keys(lowest))
+    lowest[file] = Math.min(...versions.map((version) => version[file] ?? 0));
+  return lowest;
 }
 
 export function check(root, allowlist = ALLOWLIST, baseline = null) {
@@ -135,7 +151,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const unreadable = [];
   try {
     baseline = baselineAllowlist(root, ref);
-    if (baseline === null) console.log(`forge-lint: tools/forge-lint.mjs is new relative to ${ref}; growth not checked`);
+    if (baseline === null) console.log(`forge-lint: no commit between ${ref} and HEAD has tools/forge-lint.mjs; this branch adds it, growth not checked`);
   } catch (error) {
     const reason = `cannot read the allowlist at the merge base with ${ref}: ${error.message.split("\n")[0]}`;
     if (explicit === undefined) console.log(`forge-lint: ${reason}; growth not checked`);

@@ -20,7 +20,8 @@ export type ForgeErrorCode =
   | "no-origin-remote"
   | "not-owner-repo"
   | "unparseable-remote"
-  | "unknown-host";
+  | "unknown-host"
+  | "not-github-host";
 
 export class ForgeError extends Error {
   constructor(
@@ -35,11 +36,27 @@ export class ForgeError extends Error {
 const SCP_REMOTE = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/)(.+)$/;
 export const GITHUB_HOST = "github.com";
 
+const HOSTNAME =
+  /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$/;
+const PATH_SEGMENT = /^[\w.][\w.-]*$/;
+const RESERVED_SEGMENTS: readonly string[] = [".", "..", ".git"];
+
+export const isHostname = (host: string): boolean => HOSTNAME.test(host);
+
+export const isPathSegment = (segment: string): boolean =>
+  PATH_SEGMENT.test(segment) && !RESERVED_SEGMENTS.includes(segment);
+
+export const isProjectPath = (path: string): boolean => {
+  const segments = path.split("/");
+  return segments.length >= 2 && segments.every(isPathSegment);
+};
+
 function projectPath(raw: string): string | null {
   const parts = raw.split("/").filter(Boolean);
   if (parts.length === 0) return null;
   parts[parts.length - 1] = parts[parts.length - 1].replace(/\.git$/, "");
-  return parts.length >= 2 && parts.every(Boolean) ? parts.join("/") : null;
+  const path = parts.join("/");
+  return isProjectPath(path) ? path : null;
 }
 
 function unparseable(): ForgeError {
@@ -55,7 +72,8 @@ export function parseRemoteUrl(remoteUrl: string): ProjectRef {
   if (!value.includes("://")) {
     const scp = SCP_REMOTE.exec(value);
     const path = scp === null ? null : projectPath(scp[2]);
-    if (scp === null || path === null) throw unparseable();
+    if (scp === null || path === null || !isHostname(scp[1]))
+      throw unparseable();
     return { host: scp[1].toLowerCase(), path };
   }
   let url: URL;
@@ -66,6 +84,7 @@ export function parseRemoteUrl(remoteUrl: string): ProjectRef {
   }
   const web = url.protocol === "https:" || url.protocol === "http:";
   if (!web && url.protocol !== "ssh:") throw unparseable();
+  if (/%2f/i.test(url.pathname)) throw unparseable();
   let decoded: string;
   try {
     decoded = decodeURIComponent(url.pathname);
@@ -73,7 +92,7 @@ export function parseRemoteUrl(remoteUrl: string): ProjectRef {
     throw unparseable();
   }
   const path = projectPath(decoded);
-  if (path === null || url.hostname === "") throw unparseable();
+  if (path === null || !isHostname(url.hostname)) throw unparseable();
   return { host: url.hostname.toLowerCase(), path };
 }
 
@@ -101,10 +120,23 @@ export function ownerAndName(project: ProjectRef): {
   if (parts.length !== 2 || parts.some((part) => part === ""))
     throw new ForgeError(
       "not-owner-repo",
-      `${project.host}/${project.path} is not an owner/repo path`
+      "the project path is not an owner/repo path"
     );
   return { owner: parts[0], name: parts[1] };
 }
+
+export function requireGithub(project: ProjectRef): ProjectRef {
+  if (project.host !== GITHUB_HOST)
+    throw new ForgeError(
+      "not-github-host",
+      "this project is not on github.com, so the GitHub reader cannot serve it"
+    );
+  return project;
+}
+
+export const githubOwnerAndName = (
+  project: ProjectRef
+): ReturnType<typeof ownerAndName> => ownerAndName(requireGithub(project));
 
 interface Capture {
   readonly code: number;
@@ -113,6 +145,17 @@ interface Capture {
 }
 
 const TIMED_OUT = 124;
+
+function killGroup(child: {
+  readonly pid: number;
+  kill(signal: "SIGKILL"): void;
+}): void {
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+}
 export const GLAB_TIMEOUT_MS = 3000;
 
 async function capture(
@@ -125,6 +168,7 @@ async function capture(
       stderr: "pipe",
       stdin: "ignore",
       env: process.env,
+      detached: timeoutMs !== undefined,
     });
     const finished = Promise.all([
       new Response(child.stdout).text(),
@@ -135,7 +179,7 @@ async function capture(
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<Capture>((resolve) => {
       timer = setTimeout(() => {
-        child.kill("SIGKILL");
+        killGroup(child);
         resolve({ code: TIMED_OUT, stdout: "", stderr: "" });
       }, timeoutMs);
     });

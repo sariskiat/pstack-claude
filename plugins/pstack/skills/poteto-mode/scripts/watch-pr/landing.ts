@@ -1,5 +1,10 @@
 import { WatcherQueryError } from "./github.ts";
-import { GITHUB_HOST } from "../forge/forge.ts";
+import {
+  GITHUB_HOST,
+  isHostname,
+  isPathSegment,
+  isProjectPath,
+} from "../forge/forge.ts";
 import { parsePrNumber, type PrContext } from "./types.ts";
 
 export interface LandingRevision {
@@ -42,17 +47,8 @@ export function flag(value: unknown, label: string): boolean {
   return value;
 }
 
-const HOSTNAME =
-  /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$/;
-const PATH_SEGMENT = /^\w[\w.-]*$/;
-
 function projectRef(host: string, path: string): void {
-  const segments = path.split("/");
-  if (
-    !HOSTNAME.test(host) ||
-    segments.length < 2 ||
-    !segments.every((segment) => PATH_SEGMENT.test(segment))
-  )
+  if (!isHostname(host) || !isProjectPath(path))
     invalid("host and path must be a hostname and group/project name segments");
 }
 
@@ -66,7 +62,7 @@ export function parseContext(value: unknown): PrContext {
   }
   const owner = text(fields.owner, "owner");
   const repo = text(fields.repo, "repo");
-  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo))
+  if (!isPathSegment(owner) || !isPathSegment(repo))
     invalid("owner and repo must be individual repository names");
   return {
     host: GITHUB_HOST,
