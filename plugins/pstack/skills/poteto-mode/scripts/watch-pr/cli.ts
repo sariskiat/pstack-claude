@@ -6,12 +6,14 @@ import {
   InvalidArgumentError,
   Option,
 } from "commander";
+import { ForgeError, forgeForCheckout } from "../forge/forge.ts";
 import {
   GhGitHubReader,
   WatcherQueryError,
   discoverStack,
   resolveContext,
 } from "./github.ts";
+import { GlabReader } from "./gitlab.ts";
 import {
   runQueued,
   deadlineVerdict,
@@ -87,7 +89,7 @@ export function parseArgs(
 ): CliOptions {
   const program = new Command("watch-pr")
     .description(
-      "Watch one pull request, a connected stack, or an immutable queued stack.\nJSON (NDJSON while polling) is the default; --pretty renders human text."
+      "Watch one pull request, a connected stack, or an immutable queued stack.\nA checkout whose origin is a GitLab host is read as merge requests through glab.\nJSON (NDJSON while polling) is the default; --pretty renders human text."
     )
     .configureOutput({ writeOut: io.stdout, writeErr: io.stderr })
     .exitOverride()
@@ -152,18 +154,61 @@ export function parseArgs(
     },
   };
 }
+export interface ForgeLookup {
+  readonly checkout: string;
+  readonly glabTimeoutMs?: number;
+}
 export interface CliRuntime {
   readonly deadline: WatchDeadline;
-  readonly reader: T.ForgeReader;
+  readonly reader: T.ForgeReader | ForgeLookup;
   readonly clock: WatchClock;
   readonly stdout: (value: string) => void;
   readonly stderr: (value: string) => void;
+}
+const isLookup = (reader: CliRuntime["reader"]): reader is ForgeLookup =>
+  "checkout" in reader;
+/** `--owner` with `--repo` keeps the GitHub reader without looking at the checkout. */
+export async function selectReader(
+  options: Pick<CliOptions, "owner" | "repo">,
+  deadline: WatchDeadline,
+  lookup: ForgeLookup
+): Promise<T.ForgeReader> {
+  if (options.owner !== null && options.repo !== null)
+    return new GhGitHubReader(deadline);
+  const forge = await forgeForCheckout(lookup.checkout, {
+    glabTimeoutMs: lookup.glabTimeoutMs,
+  });
+  return forge.kind === "gitlab"
+    ? new GlabReader(forge.project, deadline, { cwd: lookup.checkout })
+    : new GhGitHubReader(deadline);
+}
+function seedContext(
+  reader: T.ForgeReader,
+  options: CliOptions
+): Promise<T.PrContext> {
+  const pr = options.pr ?? options.stackPrs[0] ?? null;
+  if (!(reader instanceof GlabReader))
+    return resolveContext({
+      reader,
+      owner: options.owner,
+      repo: options.repo,
+      pr,
+    });
+  if (options.owner !== null || options.repo !== null)
+    throw new WatcherQueryError({
+      kind: "forge-unavailable",
+      retryable: false,
+      code: "owner-repo-on-gitlab",
+      detail:
+        "--owner and --repo name a GitHub repository, but this checkout is on GitLab",
+    });
+  return reader.currentPr(pr);
 }
 function realRuntime(timeout: number): CliRuntime {
   const deadline = new WatchDeadline(timeout, () => performance.now() / 1_000);
   return {
     deadline,
-    reader: new GhGitHubReader(deadline),
+    reader: { checkout: process.cwd() },
     clock: {
       now: () => performance.now() / 1_000,
       observedAt: () => new Date().toISOString(),
@@ -196,20 +241,26 @@ export async function main(
   const render = options.pretty ? renderPretty : renderJson;
   const emit = (verdict: T.ProgressVerdict): void =>
     runtime.stdout(render(verdict));
+  let reader: T.ForgeReader;
   let contexts: T.NonEmpty<T.PrContext>;
   try {
-    const seed = await resolveContext({
-      reader: runtime.reader,
-      owner: options.owner,
-      repo: options.repo,
-      pr: options.pr ?? options.stackPrs[0] ?? null,
-    });
+    reader = isLookup(runtime.reader)
+      ? await selectReader(options, runtime.deadline, runtime.reader)
+      : runtime.reader;
+    const seed = await seedContext(reader, options);
     contexts =
       nonEmpty(options.stackPrs.map((number) => ({ ...seed, number }))) ??
-      (options.mode === "single"
-        ? [seed]
-        : await discoverStack(runtime.reader, seed));
-  } catch (error) {
+      (options.mode === "single" ? [seed] : await discoverStack(reader, seed));
+  } catch (thrown) {
+    const error =
+      thrown instanceof ForgeError
+        ? new WatcherQueryError({
+            kind: "forge-unavailable",
+            retryable: false,
+            code: thrown.code,
+            detail: thrown.message,
+          })
+        : thrown;
     if (
       !(error instanceof WatcherQueryError) &&
       !(error instanceof DeadlineExceeded)
@@ -227,7 +278,7 @@ export async function main(
     return verdict.exitCode;
   }
   const dependencies = {
-    reader: runtime.reader,
+    reader,
     clock: runtime.clock,
     emit,
     deadline: runtime.deadline,
