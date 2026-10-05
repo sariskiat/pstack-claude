@@ -226,7 +226,7 @@ describe("ownerAndName", () => {
 describe("detectForgeEnv glab cost", () => {
   async function withFakeBins(
     bins: Record<string, string>,
-    run: () => Promise<void>
+    run: (dir: string) => Promise<void>
   ): Promise<void> {
     const dir = await mkdtemp(join(tmpdir(), "forge-bins-"));
     const saved = process.env.PATH;
@@ -236,29 +236,39 @@ describe("detectForgeEnv glab cost", () => {
         await chmod(join(dir, name), 0o755);
       }
       process.env.PATH = `${dir}:${saved}`;
-      await run();
+      await run(dir);
     } finally {
       process.env.PATH = saved;
       await rm(dir, { recursive: true, force: true });
     }
   }
 
+  const glabRan = (dir: string): Promise<boolean> =>
+    readFile(join(dir, "glab-ran")).then(
+      () => true,
+      () => false
+    );
+
   test("a github.com remote never runs glab", async () => {
-    await withFakeBins({ glab: "sleep 5" }, async () => {
-      const started = performance.now();
-      const forge = await detectForgeEnv("github.com");
-      expect(performance.now() - started).toBeLessThan(2000);
-      expect(forge.gitlabHosts).toEqual([]);
-    });
+    await withFakeBins(
+      { glab: 'touch "$(dirname "$0")/glab-ran"' },
+      async (dir) => {
+        const forge = await detectForgeEnv("github.com");
+        expect(await glabRan(dir)).toBe(false);
+        expect(forge.gitlabHosts).toEqual([]);
+      }
+    );
   });
 
   test("an origin CLI on PATH never runs glab", async () => {
-    await withFakeBins({ glab: "sleep 5", origin: "exit 0" }, async () => {
-      const started = performance.now();
-      const forge = await detectForgeEnv(GITLAB);
-      expect(performance.now() - started).toBeLessThan(2000);
-      expect(forge.originOnPath).toBe(true);
-    });
+    await withFakeBins(
+      { glab: 'touch "$(dirname "$0")/glab-ran"', origin: "exit 0" },
+      async (dir) => {
+        const forge = await detectForgeEnv(GITLAB);
+        expect(await glabRan(dir)).toBe(false);
+        expect(forge.originOnPath).toBe(true);
+      }
+    );
   });
 
   test("a hung glab is killed at the timeout and lists no hosts", async () => {
