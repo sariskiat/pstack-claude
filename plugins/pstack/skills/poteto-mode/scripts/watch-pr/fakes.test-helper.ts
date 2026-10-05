@@ -2,7 +2,7 @@ import type {
   Check,
   ChecksFastPath,
   CommitRollup,
-  GitHubReader,
+  ForgeReader,
   OpenPullRequest,
   PrContext,
   PullRequestFacts,
@@ -59,7 +59,7 @@ export function failedCheck(name = "ci"): Check {
 
 export function fakeReader(
   options: FakeReaderOptions = {}
-): GitHubReader & { readonly calls: readonly string[] } {
+): ForgeReader & { readonly calls: readonly string[] } {
   const calls: string[] = [];
   const context = options.current ?? {
     host: "github.com",

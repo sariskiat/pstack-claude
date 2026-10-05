@@ -154,7 +154,7 @@ export function parseArgs(
 }
 export interface CliRuntime {
   readonly deadline: WatchDeadline;
-  readonly reader: T.GitHubReader;
+  readonly reader: T.ForgeReader;
   readonly clock: WatchClock;
   readonly stdout: (value: string) => void;
   readonly stderr: (value: string) => void;

@@ -421,7 +421,7 @@ export type RollupPage =
       readonly endCursor: string | null;
     }
   | { readonly kind: "no-rollup" };
-export interface GitHubReader {
+export interface ForgeReader {
   originRepo(): Promise<ProjectRef | null>;
   currentPr(pr: PrNumber | null): Promise<PrContext>;
   pullRequest(context: PrContext): Promise<PullRequestFacts>;

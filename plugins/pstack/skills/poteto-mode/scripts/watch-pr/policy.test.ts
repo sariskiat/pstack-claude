@@ -20,7 +20,7 @@ import {
   pendingCheck,
 } from "./fakes.test-helper.ts";
 import type {
-  GitHubReader,
+  ForgeReader,
   NonEmpty,
   PollingOptions,
   PrContext,
@@ -275,7 +275,7 @@ describe("queued-stack cadence", () => {
         timeline.push(`read:${pr.number}`);
         return base.pullRequest(pr);
       },
-    } satisfies GitHubReader;
+    } satisfies ForgeReader;
     let now = 0;
     let sleeps = 0;
     const running = runQueued({
@@ -358,7 +358,7 @@ describe("queued-stack cadence", () => {
             }
           : facts;
       },
-    } satisfies GitHubReader;
+    } satisfies ForgeReader;
     let now = 0;
     let sleeps = 0;
     const emitted: ProgressVerdict[] = [];

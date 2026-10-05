@@ -519,7 +519,7 @@ function graphqlArgs(
   ];
 }
 
-export class GhGitHubReader implements T.GitHubReader {
+export class GhGitHubReader implements T.ForgeReader {
   constructor(private readonly deadline: WatchDeadline) {}
   private run(argv: readonly [string, ...string[]]): Promise<CommandResult> {
     return run(argv, this.deadline);
@@ -746,7 +746,7 @@ export class GhGitHubReader implements T.GitHubReader {
 }
 
 export async function resolveChecks(
-  reader: T.GitHubReader,
+  reader: T.ForgeReader,
   context: T.PrContext
 ): Promise<T.CheckRead> {
   const fast = await reader.checksFastPath(context);
@@ -782,7 +782,7 @@ export async function resolveChecks(
   throw new ChecksUnavailable(`could not read PR checks: ${suffix}`);
 }
 export async function resolveContext(args: {
-  readonly reader: T.GitHubReader;
+  readonly reader: T.ForgeReader;
   readonly owner: string | null;
   readonly repo: string | null;
   readonly pr: T.PrNumber | null;
@@ -896,7 +896,7 @@ export function orderStack(
   );
 }
 export async function discoverStack(
-  reader: T.GitHubReader,
+  reader: T.ForgeReader,
   context: T.PrContext
 ): Promise<T.NonEmpty<T.PrContext>> {
   const open = await reader.openPullRequests(context);

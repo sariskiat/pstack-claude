@@ -33,7 +33,7 @@ export function assessGitHubMerge(args: {
   };
 }
 async function mergeAssessment(
-  reader: T.GitHubReader,
+  reader: T.ForgeReader,
   facts: T.PullRequestFacts
 ) {
   const commits = await reader.commitRollups(facts.context);
@@ -60,7 +60,7 @@ async function mergeAssessment(
 // An earlier commit that reported checks, or mergeability GitHub is still
 // computing, means the head has not reported yet.
 async function noChecksCi(
-  reader: T.GitHubReader,
+  reader: T.ForgeReader,
   facts: T.PullRequestFacts
 ): Promise<T.CiNone> {
   const merge = await mergeAssessment(reader, facts);
@@ -81,7 +81,7 @@ async function noChecksCi(
   };
 }
 async function reportedCi(
-  reader: T.GitHubReader,
+  reader: T.ForgeReader,
   facts: T.PullRequestFacts,
   checks: T.ReportedChecks,
   pendingHistory: "include" | "omit"
@@ -144,7 +144,7 @@ const AUTOMATION_TOKENS = [
   "review automation",
 ] as const;
 export async function readSnapshot(args: {
-  readonly reader: T.GitHubReader;
+  readonly reader: T.ForgeReader;
   readonly context: T.PrContext;
   readonly pendingHistory: "include" | "omit";
   readonly allowDraft: boolean;
@@ -408,7 +408,7 @@ export interface WatchClock {
 }
 export interface RunDependencies {
   readonly deadline: WatchDeadline;
-  readonly reader: T.GitHubReader;
+  readonly reader: T.ForgeReader;
   readonly clock: WatchClock;
   readonly emit: (verdict: T.ProgressVerdict) => void;
 }
