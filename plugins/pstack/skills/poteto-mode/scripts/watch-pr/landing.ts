@@ -42,14 +42,28 @@ export function flag(value: unknown, label: string): boolean {
   return value;
 }
 
+const HOSTNAME =
+  /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$/;
+const PATH_SEGMENT = /^\w[\w.-]*$/;
+
+function projectRef(host: string, path: string): void {
+  const segments = path.split("/");
+  if (
+    !HOSTNAME.test(host) ||
+    segments.length < 2 ||
+    !segments.every((segment) => PATH_SEGMENT.test(segment))
+  )
+    invalid("host and path must be a hostname and group/project name segments");
+}
+
 export function parseContext(value: unknown): PrContext {
   const fields = object(value, "PR context");
-  if (fields.host !== undefined)
-    return {
-      host: text(fields.host, "host"),
-      path: text(fields.path, "path"),
-      number: parsePrNumber(fields.number),
-    };
+  if (fields.host !== undefined) {
+    const host = text(fields.host, "host");
+    const path = text(fields.path, "path");
+    projectRef(host, path);
+    return { host, path, number: parsePrNumber(fields.number) };
+  }
   const owner = text(fields.owner, "owner");
   const repo = text(fields.repo, "repo");
   if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo))

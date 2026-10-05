@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  detectForgeEnv,
   ForgeError,
+  ownerAndName,
   parseGlabHosts,
   parseRemoteUrl,
   resolveCheckoutForge,
@@ -166,5 +168,114 @@ describe("resolveCheckoutForge", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("parseRemoteUrl on malformed escapes", () => {
+  test("a bad percent escape is an unparseable-remote ForgeError, not a URIError", () => {
+    for (const remote of ["https://x.io/a/%E0%A4%A", "https://u:%zz@h/%zz/r"])
+      expect(failure(() => parseRemoteUrl(remote)).code).toBe(
+        "unparseable-remote"
+      );
+  });
+
+  test("the error text does not echo the credential part", () => {
+    const error = failure(() => parseRemoteUrl("https://u:s3cret%zz@h/%zz/r"));
+    expect(error.message).not.toContain("s3cret");
+  });
+});
+
+describe("one host rule for every transport", () => {
+  test("https with a port, ssh with a port, and scp name the same host", () => {
+    const remotes = [
+      `https://${GITLAB}:8443/g/p.git`,
+      `ssh://git@${GITLAB}:2222/g/p.git`,
+      `git@${GITLAB}:g/p.git`,
+      `https://${GITLAB}/g/p.git`,
+    ];
+    for (const remote of remotes)
+      expect(parseRemoteUrl(remote)).toEqual({ host: GITLAB, path: "g/p" });
+  });
+
+  test("a glab host listed with a port still matches the port-free host", () => {
+    expect(
+      resolveForge(
+        `https://${GITLAB}:8443/g/p`,
+        env({ gitlabHosts: [`${GITLAB}:8443`] })
+      ).kind
+    ).toBe("gitlab");
+  });
+});
+
+describe("ownerAndName", () => {
+  test("returns owner and name for exactly two segments", () => {
+    expect(ownerAndName({ host: "github.com", path: "o/r" })).toEqual({
+      owner: "o",
+      name: "r",
+    });
+  });
+
+  test("rejects a nested group path, a single segment, and an empty segment", () => {
+    for (const path of ["a/b/c", "a/b/c/d", "solo", "a//b", "/b", "a/"])
+      expect(
+        failure(() => ownerAndName({ host: "github.com", path })).code
+      ).toBe("not-owner-repo");
+  });
+});
+
+describe("detectForgeEnv glab cost", () => {
+  async function withFakeBins(
+    bins: Record<string, string>,
+    run: () => Promise<void>
+  ): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), "forge-bins-"));
+    const saved = process.env.PATH;
+    try {
+      for (const [name, body] of Object.entries(bins)) {
+        await writeFile(join(dir, name), `#!/bin/sh\n${body}\n`);
+        await chmod(join(dir, name), 0o755);
+      }
+      process.env.PATH = `${dir}:${saved}`;
+      await run();
+    } finally {
+      process.env.PATH = saved;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("a github.com remote never runs glab", async () => {
+    await withFakeBins({ glab: "sleep 5" }, async () => {
+      const started = performance.now();
+      const forge = await detectForgeEnv("github.com");
+      expect(performance.now() - started).toBeLessThan(2000);
+      expect(forge.gitlabHosts).toEqual([]);
+    });
+  });
+
+  test("an origin CLI on PATH never runs glab", async () => {
+    await withFakeBins({ glab: "sleep 5", origin: "exit 0" }, async () => {
+      const started = performance.now();
+      const forge = await detectForgeEnv(GITLAB);
+      expect(performance.now() - started).toBeLessThan(2000);
+      expect(forge.originOnPath).toBe(true);
+    });
+  });
+
+  test("a hung glab is killed at the timeout and lists no hosts", async () => {
+    await withFakeBins({ glab: "sleep 5" }, async () => {
+      const started = performance.now();
+      const forge = await detectForgeEnv(GITLAB, { glabTimeoutMs: 300 });
+      const elapsed = performance.now() - started;
+      expect(forge.gitlabHosts).toEqual([]);
+      expect(elapsed).toBeGreaterThanOrEqual(250);
+      expect(elapsed).toBeLessThan(2000);
+    });
+  });
+
+  test("a gitlab host still reads its glab host list", async () => {
+    await withFakeBins({ glab: `printf '${GITLAB}\\n  ok\\n'` }, async () => {
+      const forge = await detectForgeEnv(GITLAB);
+      expect(forge.gitlabHosts).toEqual([GITLAB]);
+    });
   });
 });

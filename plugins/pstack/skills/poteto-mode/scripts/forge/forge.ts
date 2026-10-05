@@ -66,16 +66,25 @@ export function parseRemoteUrl(remoteUrl: string): ProjectRef {
   }
   const web = url.protocol === "https:" || url.protocol === "http:";
   if (!web && url.protocol !== "ssh:") throw unparseable();
-  const path = projectPath(decodeURIComponent(url.pathname));
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(url.pathname);
+  } catch {
+    throw unparseable();
+  }
+  const path = projectPath(decoded);
   if (path === null || url.hostname === "") throw unparseable();
-  return { host: (web ? url.host : url.hostname).toLowerCase(), path };
+  return { host: url.hostname.toLowerCase(), path };
 }
+
+const withoutPort = (host: string): string =>
+  host.toLowerCase().replace(/:\d+$/, "");
 
 /** Origin wins when its CLI is installed, then a host `glab` lists, then github.com. */
 export function resolveForge(remoteUrl: string, env: ForgeEnv): ResolvedForge {
   const project = parseRemoteUrl(remoteUrl);
   if (env.originOnPath) return { kind: "origin", project };
-  if (env.gitlabHosts.map((host) => host.toLowerCase()).includes(project.host))
+  if (env.gitlabHosts.map(withoutPort).includes(project.host))
     return { kind: "gitlab", project };
   if (project.host === GITHUB_HOST) return { kind: "github", project };
   throw new ForgeError(
@@ -103,19 +112,38 @@ interface Capture {
   readonly stderr: string;
 }
 
-async function capture(argv: readonly string[]): Promise<Capture> {
+const TIMED_OUT = 124;
+export const GLAB_TIMEOUT_MS = 3000;
+
+async function capture(
+  argv: readonly string[],
+  timeoutMs?: number
+): Promise<Capture> {
   try {
     const child = Bun.spawn([...argv], {
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
+      env: process.env,
     });
-    const [stdout, stderr, code] = await Promise.all([
+    const finished = Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
       child.exited,
-    ]);
-    return { code, stdout, stderr };
+    ]).then(([stdout, stderr, code]) => ({ code, stdout, stderr }));
+    if (timeoutMs === undefined) return await finished;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<Capture>((resolve) => {
+      timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        resolve({ code: TIMED_OUT, stdout: "", stderr: "" });
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([finished, expired]);
+    } finally {
+      clearTimeout(timer);
+    }
   } catch {
     return { code: 127, stdout: "", stderr: "" };
   }
@@ -129,14 +157,22 @@ export function parseGlabHosts(output: string): readonly string[] {
     .filter((line) => /^[A-Za-z0-9][A-Za-z0-9.-]*(:\d+)?$/.test(line));
 }
 
-export async function detectForgeEnv(): Promise<ForgeEnv> {
-  const [glab, origin] = await Promise.all([
-    capture(["glab", "auth", "status"]),
-    capture(["sh", "-c", "command -v origin"]),
-  ]);
+/** Runs `glab auth status` only when it can change the answer: not for github.com, not when origin wins. */
+export async function detectForgeEnv(
+  remoteHost: string,
+  options: { readonly glabTimeoutMs?: number } = {}
+): Promise<ForgeEnv> {
+  const origin = await capture(["sh", "-c", "command -v origin"]);
+  const originOnPath = origin.code === 0;
+  if (originOnPath || remoteHost === GITHUB_HOST)
+    return { gitlabHosts: [], originOnPath };
+  const glab = await capture(
+    ["glab", "auth", "status"],
+    options.glabTimeoutMs ?? GLAB_TIMEOUT_MS
+  );
   return {
     gitlabHosts: parseGlabHosts(`${glab.stdout}\n${glab.stderr}`),
-    originOnPath: origin.code === 0,
+    originOnPath,
   };
 }
 
@@ -162,5 +198,6 @@ export async function resolveCheckoutForge(
   cwd: string
 ): Promise<ResolvedForge> {
   const remote = await originRemoteUrl(cwd);
-  return resolveForge(remote, await detectForgeEnv());
+  const { host } = parseRemoteUrl(remote);
+  return resolveForge(remote, await detectForgeEnv(host));
 }
