@@ -9,6 +9,7 @@ export interface ProjectRef {
 export interface ForgeEnv {
   readonly gitlabHosts: readonly string[];
   readonly originOnPath: boolean;
+  readonly glabTimedOutAfterMs?: number;
 }
 
 export interface ResolvedForge {
@@ -21,7 +22,9 @@ export type ForgeErrorCode =
   | "not-owner-repo"
   | "unparseable-remote"
   | "unknown-host"
-  | "not-github-host";
+  | "not-github-host"
+  | "glab-timeout"
+  | "unsupported-forge";
 
 export class ForgeError extends Error {
   constructor(
@@ -106,9 +109,14 @@ export function resolveForge(remoteUrl: string, env: ForgeEnv): ResolvedForge {
   if (env.gitlabHosts.map(withoutPort).includes(project.host))
     return { kind: "gitlab", project };
   if (project.host === GITHUB_HOST) return { kind: "github", project };
+  if (env.glabTimedOutAfterMs !== undefined)
+    throw new ForgeError(
+      "glab-timeout",
+      `glab did not answer within ${env.glabTimedOutAfterMs / 1000} s, so ${project.host} could not be checked. The network or the VPN is the likely cause. Reconnect, then run the command again.`
+    );
   throw new ForgeError(
     "unknown-host",
-    `host ${project.host} is not github.com, not listed by glab auth status, and no origin CLI is on PATH`
+    `host ${project.host} is not github.com, not listed by glab auth status, and no origin CLI is on PATH. For a GitLab host, run: glab auth login --hostname ${project.host}`
   );
 }
 
@@ -138,7 +146,7 @@ export const githubOwnerAndName = (
   project: ProjectRef
 ): ReturnType<typeof ownerAndName> => ownerAndName(requireGithub(project));
 
-interface Capture {
+export interface Capture {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
@@ -158,9 +166,10 @@ function killGroup(child: {
 }
 export const GLAB_TIMEOUT_MS = 10_000;
 
-async function capture(
+export async function capture(
   argv: readonly string[],
-  timeoutMs?: number
+  timeoutMs?: number,
+  cwd?: string
 ): Promise<Capture> {
   try {
     const child = Bun.spawn([...argv], {
@@ -169,6 +178,7 @@ async function capture(
       stdin: "ignore",
       env: process.env,
       detached: timeoutMs !== undefined,
+      ...(cwd === undefined ? {} : { cwd }),
     });
     const finished = Promise.all([
       new Response(child.stdout).text(),
@@ -209,13 +219,12 @@ export async function detectForgeEnv(
   const originOnPath = origin.code === 0;
   if (originOnPath || remoteHost === GITHUB_HOST)
     return { gitlabHosts: [], originOnPath };
-  const glab = await capture(
-    ["glab", "auth", "status"],
-    options.glabTimeoutMs ?? GLAB_TIMEOUT_MS
-  );
+  const timeoutMs = options.glabTimeoutMs ?? GLAB_TIMEOUT_MS;
+  const glab = await capture(["glab", "auth", "status"], timeoutMs);
   return {
     gitlabHosts: parseGlabHosts(`${glab.stdout}\n${glab.stderr}`),
     originOnPath,
+    ...(glab.code === TIMED_OUT ? { glabTimedOutAfterMs: timeoutMs } : {}),
   };
 }
 
@@ -235,6 +244,53 @@ export async function originRemoteUrl(cwd: string): Promise<string> {
       "this checkout has no remote named origin"
     );
   return url;
+}
+
+/** The checked-out branch, or null on a detached HEAD or when git cannot say. */
+export async function currentBranch(cwd: string): Promise<string | null> {
+  const result = await capture([
+    "git",
+    "-C",
+    cwd,
+    "symbolic-ref",
+    "--short",
+    "-q",
+    "HEAD",
+  ]);
+  const branch = result.stdout.trim();
+  return result.code === 0 && branch !== "" ? branch : null;
+}
+
+export type CheckoutForge =
+  | { readonly kind: "github" }
+  | { readonly kind: "gitlab"; readonly project: ProjectRef };
+
+/** A github.com origin, an unreadable origin, or no origin keep `gh`, so GitHub runs make the calls they always made. Any other host must be a GitLab host that glab lists. */
+export async function forgeForCheckout(
+  cwd: string,
+  options: { readonly glabTimeoutMs?: number } = {}
+): Promise<CheckoutForge> {
+  let remote: string;
+  let host: string;
+  try {
+    remote = await originRemoteUrl(cwd);
+    host = parseRemoteUrl(remote).host;
+  } catch (error) {
+    if (
+      error instanceof ForgeError &&
+      (error.code === "no-origin-remote" || error.code === "unparseable-remote")
+    )
+      return { kind: "github" };
+    throw error;
+  }
+  if (host === GITHUB_HOST) return { kind: "github" };
+  const forge = resolveForge(remote, await detectForgeEnv(host, options));
+  if (forge.kind === "gitlab")
+    return { kind: "gitlab", project: forge.project };
+  throw new ForgeError(
+    "unsupported-forge",
+    `${forge.project.host} resolves to the ${forge.kind} forge, which this tool does not read`
+  );
 }
 
 export async function resolveCheckoutForge(
