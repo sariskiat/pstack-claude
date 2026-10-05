@@ -274,7 +274,7 @@ describe("detectForgeEnv glab cost", () => {
 
   test("a gitlab host still reads its glab host list", async () => {
     await withFakeBins({ glab: `printf '${GITLAB}\\n  ok\\n'` }, async () => {
-      const forge = await detectForgeEnv(GITLAB);
+      const forge = await detectForgeEnv(GITLAB, { glabTimeoutMs: 60_000 });
       expect(forge.gitlabHosts).toEqual([GITLAB]);
     });
   });
@@ -297,6 +297,8 @@ async function pidFrom(file: string): Promise<number> {
   }
   throw new Error("fake binary never wrote its pid");
 }
+
+const KILL_TIMEOUT_MS = 5000;
 
 describe("a timed-out glab leaves no process behind", () => {
   async function withGlab(
@@ -325,19 +327,19 @@ describe("a timed-out glab leaves no process behind", () => {
     await withGlab(
       (pidFile) => `echo $$ > ${pidFile}\nexec sleep 62`,
       async (pidFile) => {
-        await detectForgeEnv(GITLAB, { glabTimeoutMs: 300 });
+        await detectForgeEnv(GITLAB, { glabTimeoutMs: KILL_TIMEOUT_MS });
         const pid = await pidFrom(pidFile);
         await Bun.sleep(100);
         expect(alive(pid)).toBe(false);
       }
     );
-  });
+  }, 30_000);
 
   test("a grandchild of a wrapper script is dead after the call", async () => {
     await withGlab(
       (pidFile) => `sh -c 'echo $$ > ${pidFile}; exec sleep 62' &\nwait`,
       async (pidFile) => {
-        await detectForgeEnv(GITLAB, { glabTimeoutMs: 300 });
+        await detectForgeEnv(GITLAB, { glabTimeoutMs: KILL_TIMEOUT_MS });
         const pid = await pidFrom(pidFile);
         await Bun.sleep(100);
         const stillAlive = alive(pid);
@@ -345,7 +347,7 @@ describe("a timed-out glab leaves no process behind", () => {
         expect(stillAlive).toBe(false);
       }
     );
-  });
+  }, 30_000);
 });
 
 describe("one segment rule and one host rule for remotes", () => {

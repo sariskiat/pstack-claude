@@ -156,7 +156,7 @@ function killGroup(child: {
     child.kill("SIGKILL");
   }
 }
-export const GLAB_TIMEOUT_MS = 3000;
+export const GLAB_TIMEOUT_MS = 10_000;
 
 async function capture(
   argv: readonly string[],
