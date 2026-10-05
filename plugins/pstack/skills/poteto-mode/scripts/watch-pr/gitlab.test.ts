@@ -72,6 +72,15 @@ async function rejection(
   throw new Error("expected a WatcherQueryError");
 }
 
+const outcome = (served: Served, allowDraft = false) =>
+  snapshot(served, allowDraft).then(
+    ({ decision }): object => ({ decision: decision.kind }),
+    (error: unknown): object => {
+      if (error instanceof WatcherQueryError) return error.failure;
+      throw error;
+    }
+  );
+
 const withStatus = (name: string, status: string) => ({
   ...fixture(name),
   detailed_merge_status: status,
@@ -1165,15 +1174,6 @@ describe("recorded merge requests through the unchanged policy", () => {
     }
   );
 
-  const outcome = (served: Served) =>
-    snapshot(served).then(
-      ({ decision }): object => ({ decision: decision.kind }),
-      (error: unknown): object => {
-        if (error instanceof WatcherQueryError) return error.failure;
-        throw error;
-      }
-    );
-
   test("a merge request without the head_pipeline key, as a token that cannot read pipelines sees it, fails instead of reading as no CI", async () => {
     const hidden = fixture("mr-red.json");
     delete hidden.head_pipeline;
@@ -1291,6 +1291,93 @@ describe("recorded merge requests through the unchanged policy", () => {
     ).toHaveLength(2);
     for (const argv of calls)
       expect(argv.slice(0, 4)).toEqual(["glab", "api", "--hostname", HOST]);
+  });
+});
+
+describe("lists longer than one page", () => {
+  const discussion = (n: number, resolved: boolean) => ({
+    id: `discussion-${n}`,
+    individual_note: false,
+    notes: [
+      {
+        id: n,
+        type: "DiscussionNote",
+        body: `note ${n}`,
+        created_at: "2026-10-06T02:49:10.531+07:00",
+        system: false,
+        resolvable: true,
+        resolved,
+        author: { username: "user" },
+      },
+    ],
+  });
+  const jobs = (count: number, last = "success") =>
+    Array.from({ length: count }, (_, index) => ({
+      id: index + 1,
+      name: `job-${index + 1}`,
+      stage: "check",
+      status: index + 1 === count ? last : "success",
+      allow_failure: false,
+      web_url: `https://${HOST}/${PROJECT}/-/jobs/${index + 1}`,
+    }));
+  const jobCalls = (calls: string[][]) =>
+    calls.filter((argv) => argv[4].includes("/jobs?")).length;
+
+  test("the 101st discussion is read, so an unresolved thread there blocks", async () => {
+    const { decision } = await snapshot({
+      mr: fixture("mr-threads.json"),
+      approvals: fixture("approvals-green.json"),
+      jobs: fixture("jobs-green.json"),
+      discussions: [
+        ...Array.from({ length: 100 }, (_, index) =>
+          discussion(index + 1, true)
+        ),
+        discussion(101, false),
+      ],
+    });
+    expect(decision).toMatchObject({
+      kind: "blocker",
+      blocker: { kind: "review-threads", threads: [{ id: "discussion-101" }] },
+    });
+  });
+
+  test("the 101st job is read, so a failed job there blocks", async () => {
+    const { decision } = await snapshot({
+      mr: fixture("mr-red.json"),
+      approvals: fixture("approvals-green.json"),
+      jobs: jobs(101, "failed"),
+    });
+    expect(decision).toMatchObject({
+      kind: "blocker",
+      blocker: {
+        kind: "failing-checks",
+        ci: { failed: [{ name: "job-101" }] },
+      },
+    });
+  });
+
+  test("a job list exactly as long as the page limit is read in full", async () => {
+    const { decision, calls } = await snapshot({
+      mr: fixture("mr-green.json"),
+      approvals: fixture("approvals-green.json"),
+      jobs: jobs(1000),
+    });
+    expect(decision.kind).toBe("ready");
+    expect(jobCalls(calls)).toBe(11);
+  });
+
+  test("one job past the page limit is refused for good instead of retried", async () => {
+    expect(
+      await outcome({
+        mr: fixture("mr-green.json"),
+        approvals: fixture("approvals-green.json"),
+        jobs: jobs(1001),
+      })
+    ).toMatchObject({
+      kind: "forge-unavailable",
+      code: "too-many-items",
+      retryable: false,
+    });
   });
 });
 

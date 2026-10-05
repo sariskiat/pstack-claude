@@ -600,19 +600,23 @@ export class GlabReader implements T.ForgeReader {
   ): Promise<readonly unknown[]> {
     const items: unknown[] = [];
     const separator = endpoint.includes("?") ? "&" : "?";
-    for (let page = 1; page <= pageLimit; page++) {
+    const path = endpoint.split("?")[0];
+    for (let page = 1; ; page++) {
       const batch = list(
         await this.api(
           `${endpoint}${separator}per_page=${PAGE_SIZE}&page=${page}`
         ),
-        endpoint.split("?")[0]
+        path
       );
+      if (batch.length === 0) return items;
+      if (page > pageLimit)
+        throw unavailable(
+          "too-many-items",
+          `${path} has more than ${pageLimit * PAGE_SIZE} items, so a partial list is refused`
+        );
       items.push(...batch);
       if (batch.length < PAGE_SIZE) return items;
     }
-    return invalid(
-      `${endpoint.split("?")[0]} has more than ${pageLimit * PAGE_SIZE} items, so a partial list is refused`
-    );
   }
 
   private async fetchMergeRequest(context: T.PrContext): Promise<MergeRequest> {
