@@ -230,12 +230,18 @@ function gateBlocker(
   allowDraft: boolean
 ): T.MergeBlocker | null {
   const reason = gateReason(row, allowDraft);
+  const { detailedMergeStatus } = row.facts;
   return reason === null ||
     (DEFERRED_WHILE_PENDING.has(reason) &&
       row.kind === "open" &&
       row.ci.kind === "ci-pending")
     ? null
-    : { kind: "merge-gate", pr: row.context, reason };
+    : {
+        kind: "merge-gate",
+        pr: row.context,
+        reason,
+        ...(detailedMergeStatus === undefined ? {} : { detailedMergeStatus }),
+      };
 }
 function readyContribution(
   row: T.PrSnapshot,

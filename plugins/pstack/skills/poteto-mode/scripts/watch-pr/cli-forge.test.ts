@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ForgeError } from "../forge/forge.ts";
 import { type CliRuntime, main, selectReader } from "./cli.ts";
+import { renderPretty } from "./render.ts";
 import { WatchDeadline } from "./deadline.ts";
 import { GhGitHubReader } from "./github.ts";
 import { GlabReader } from "./gitlab.ts";
@@ -176,7 +177,10 @@ describe("selectReader reads a GitLab checkout through glab", () => {
   });
 });
 
-function runtimeFor(reader: CliRuntime["reader"]) {
+function runtimeFor(
+  reader: CliRuntime["reader"],
+  sleeps: number[] | null = null
+) {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const runtime: CliRuntime = {
@@ -185,8 +189,9 @@ function runtimeFor(reader: CliRuntime["reader"]) {
     clock: {
       now: () => 0,
       observedAt: () => "2026-07-26T00:00:00.000Z",
-      async sleep() {
-        throw new Error("test unexpectedly slept");
+      async sleep(seconds) {
+        if (sleeps === null) throw new Error("test unexpectedly slept");
+        sleeps.push(seconds);
       },
     },
     stdout: (value) => stdout.push(value),
@@ -311,5 +316,113 @@ describe("watch-pr on a GitLab checkout", () => {
     expect(harness.stdout.join("")).toContain(
       "--owner and --repo name a GitHub repository"
     );
+  });
+});
+
+describe("GitLab output names no GitHub, and GitHub output keeps its words", () => {
+  const stamp = {
+    schemaVersion: 1,
+    sequence: 1,
+    observedAt: "fixture",
+    mode: "single",
+  } as const;
+  const failure = {
+    kind: "command-exit",
+    retryable: true,
+    code: 1,
+    detail: "boom",
+  } as const;
+  const retry = {
+    ...stamp,
+    kind: "RETRY",
+    terminal: false,
+    failure,
+    consecutiveFailures: 1,
+    retryInSeconds: 60,
+  } as const;
+  const timeout = {
+    ...stamp,
+    kind: "TIMEOUT",
+    terminal: true,
+    exitCode: 5,
+    reason: { kind: "status-unavailable", failure },
+  } as const;
+  const statusQuery = {
+    ...stamp,
+    kind: "BLOCKER",
+    terminal: true,
+    exitCode: 7,
+    blocker: { kind: "status-query", failures: 1, failure },
+  } as const;
+
+  it("keeps the GitHub RETRY, TIMEOUT, and status-query words byte for byte", () => {
+    expect(renderPretty(retry, "github")).toBe(
+      "RETRY: GitHub status query failed; retrying in 60s\ndetail=boom\n"
+    );
+    expect(renderPretty(timeout, "github")).toBe(
+      "TIMEOUT: GitHub status remained unavailable\n"
+    );
+    expect(renderPretty(statusQuery, "github")).toBe(
+      "BLOCKER: status-query\nfailures=1\ndetail=boom\naction=verify current PR context, GitHub authentication, and API availability, then rearm\n"
+    );
+  });
+
+  it("says no GitHub in a GitLab RETRY, TIMEOUT, or status-query line", () => {
+    for (const verdict of [retry, timeout, statusQuery])
+      expect(renderPretty(verdict, "gitlab")).not.toContain("GitHub");
+    expect(renderPretty(timeout, "gitlab")).toBe(
+      "TIMEOUT: status remained unavailable\n"
+    );
+  });
+
+  it("prints detailed_merge_status for a blocked merge request and no branch protection advice", async () => {
+    const { reader } = glabReader({
+      mr: fixture("mr-need-rebase.json"),
+      approvals: fixture("approvals-green.json"),
+      jobs: fixture("jobs-green.json"),
+    });
+    const pretty = runtimeFor(reader);
+    expect(await main(["--pr", "1", "--pretty"], pretty.runtime)).toBe(6);
+    const text = pretty.stdout.join("");
+    expect(text).toContain(
+      "BLOCKER: merge-blocked\npr=1\ndetailed_merge_status=need_rebase\n"
+    );
+    expect(text).not.toContain("branch protection");
+    expect(text).not.toContain("GitHub");
+    const json = runtimeFor(
+      glabReader({
+        mr: fixture("mr-need-rebase.json"),
+        approvals: fixture("approvals-green.json"),
+        jobs: fixture("jobs-green.json"),
+      }).reader
+    );
+    expect(await main(["--pr", "1"], json.runtime)).toBe(6);
+    expect(JSON.parse(json.stdout.join("")).blocker).toMatchObject({
+      kind: "merge-gate",
+      reason: "merge-blocked",
+      detailedMergeStatus: "need_rebase",
+    });
+  });
+
+  it("retries a merge request GitLab is still preparing with a RETRY line that names no GitHub", async () => {
+    const { reader } = glabReader({
+      mr: fixture("mr-preparing.json"),
+      approvals: fixture("approvals-green.json"),
+    });
+    const sleeps: number[] = [];
+    const harness = runtimeFor(reader, sleeps);
+    expect(
+      await main(
+        ["--pr", "12", "--pretty", "--max-query-errors", "2"],
+        harness.runtime
+      )
+    ).toBe(7);
+    const text = harness.stdout.join("");
+    expect(text).toStartWith("RETRY: status query failed; retrying in 60s\n");
+    expect(text).toContain(
+      "action=verify the current merge request, GitLab authentication, and API availability, then rearm"
+    );
+    expect(text).not.toContain("GitHub");
+    expect(sleeps).toEqual([60]);
   });
 });

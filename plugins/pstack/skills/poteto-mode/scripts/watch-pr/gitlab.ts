@@ -312,7 +312,7 @@ export function pullRequestFacts(
   targetTip: string | null
 ): T.PullRequestFacts {
   const open = mr.state === "OPEN";
-  return parsePullRequest(
+  const facts = parsePullRequest(
     {
       mergeable: !open
         ? "UNKNOWN"
@@ -333,6 +333,7 @@ export function pullRequestFacts(
     },
     context
   );
+  return open ? { ...facts, detailedMergeStatus: mr.status } : facts;
 }
 
 export function classifyDiscussion(value: unknown): DiscussionClass {

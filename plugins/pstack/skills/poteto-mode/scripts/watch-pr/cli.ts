@@ -22,7 +22,7 @@ import {
   verdictFactory,
   type WatchClock,
 } from "./policy.ts";
-import { renderJson, renderPretty } from "./render.ts";
+import { type RenderForge, renderJson, renderPretty } from "./render.ts";
 import type * as T from "./types.ts";
 import { nonEmpty, parsePrNumber } from "./types.ts";
 export interface CliOptions {
@@ -183,10 +183,11 @@ export async function selectReader(
 }
 function seedContext(
   reader: T.ForgeReader,
+  forge: RenderForge,
   options: CliOptions
 ): Promise<T.PrContext> {
   const pr = options.pr ?? options.stackPrs[0] ?? null;
-  if (!(reader instanceof GlabReader))
+  if (forge === "github")
     return resolveContext({
       reader,
       owner: options.owner,
@@ -237,7 +238,9 @@ export async function main(
     return error.exitCode === 0 ? 0 : 64;
   }
   const runtime = supplied ?? realRuntime(options.polling.timeout);
-  const render = options.pretty ? renderPretty : renderJson;
+  let forge: RenderForge = "github";
+  const render = (verdict: T.WatcherVerdict): string =>
+    options.pretty ? renderPretty(verdict, forge) : renderJson(verdict);
   const emit = (verdict: T.ProgressVerdict): void =>
     runtime.stdout(render(verdict));
   let reader: T.ForgeReader;
@@ -246,7 +249,8 @@ export async function main(
     reader = isLookup(runtime.reader)
       ? await selectReader(options, runtime.deadline, runtime.reader)
       : runtime.reader;
-    const seed = await seedContext(reader, options);
+    forge = reader instanceof GlabReader ? "gitlab" : "github";
+    const seed = await seedContext(reader, forge, options);
     contexts =
       nonEmpty(options.stackPrs.map((number) => ({ ...seed, number }))) ??
       (options.mode === "single" ? [seed] : await discoverStack(reader, seed));

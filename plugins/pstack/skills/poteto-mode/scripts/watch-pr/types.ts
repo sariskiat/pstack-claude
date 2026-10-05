@@ -52,6 +52,8 @@ interface PullRequestFields {
   readonly state: "OPEN" | "CLOSED" | "MERGED";
   readonly mergedAt: string | null;
   readonly isDraft: boolean;
+  /** GitLab's detailed_merge_status. GitHub facts have none. */
+  readonly detailedMergeStatus?: string;
 }
 export type PullRequestFacts = PullRequestFields &
   (
@@ -230,6 +232,7 @@ export type MergeBlocker =
       readonly kind: "merge-gate";
       readonly pr: PrContext;
       readonly reason: MergeGateReason;
+      readonly detailedMergeStatus?: string;
     };
 export type QueryFailure =
   | {
