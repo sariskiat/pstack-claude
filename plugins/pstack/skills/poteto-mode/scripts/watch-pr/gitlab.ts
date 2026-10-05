@@ -531,6 +531,11 @@ function glabFailure(
   );
 }
 
+/** A merge request from a fork names a branch of another project. */
+const fromTargetProject = (mr: Record<string, unknown>): boolean =>
+  positiveInteger(mr.source_project_id, "merge request.source_project_id") ===
+  positiveInteger(mr.target_project_id, "merge request.target_project_id");
+
 export interface GlabReaderOptions {
   readonly cwd?: string;
   readonly exec?: (
@@ -646,12 +651,14 @@ export class GlabReader implements T.ForgeReader {
         detail:
           "the checkout has no branch checked out (a detached HEAD, or git could not read it), so there is no branch to find a merge request for; pass --pr",
       });
-    const found = list(
-      await this.api(
-        `${this.projectUrl(this.project)}/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}&per_page=2`
-      ),
-      "merge requests"
-    );
+    const found = (
+      await this.pages(
+        `${this.projectUrl(this.project)}/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}`,
+        MERGE_REQUEST_PAGE_LIMIT
+      )
+    )
+      .map((item) => object(item, "merge request"))
+      .filter(fromTargetProject);
     if (found.length !== 1)
       throw new WatcherQueryError({
         kind: "invalid-context-url",
@@ -661,10 +668,7 @@ export class GlabReader implements T.ForgeReader {
       });
     return {
       ...this.project,
-      number: parsePrNumber(
-        object(found[0], "merge request").iid,
-        "merge request.iid"
-      ),
+      number: parsePrNumber(found[0].iid, "merge request.iid"),
     };
   }
 
@@ -726,19 +730,9 @@ export class GlabReader implements T.ForgeReader {
     );
     return items.map((item, index) => {
       const mr = object(item, `open merge requests[${index}]`);
-      const sourceProject = positiveInteger(
-        mr.source_project_id,
-        "merge request.source_project_id"
-      );
-      const sameProject =
-        sourceProject ===
-        positiveInteger(
-          mr.target_project_id,
-          "merge request.target_project_id"
-        );
       return {
         number: parsePrNumber(mr.iid, `open merge requests[${index}].iid`),
-        headRepository: sameProject ? this.project : null,
+        headRepository: fromTargetProject(mr) ? this.project : null,
         headRefName: text(mr.source_branch, "merge request.source_branch"),
         baseRefName: text(mr.target_branch, "merge request.target_branch"),
       };

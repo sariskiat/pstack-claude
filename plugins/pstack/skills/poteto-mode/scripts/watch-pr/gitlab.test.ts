@@ -1647,10 +1647,17 @@ describe("the merge request of the current branch", () => {
     else execFileSync("git", ["-C", dir, "checkout", "-q", "-b", branch]);
     return dir;
   }
+  const local = (iid: number) => ({
+    iid,
+    source_project_id: 42,
+    target_project_id: 42,
+  });
+  const fromFork = (iid: number) => ({ ...local(iid), source_project_id: 99 });
+
   test("finds the one open merge request of a branch whose name has a slash", async () => {
     const dir = checkout("feature/x");
     try {
-      const { exec, calls } = server({ mrList: [{ iid: 9 }] });
+      const { exec, calls } = server({ mrList: [local(9)] });
       const glab = new GlabReader(
         { host: HOST, path: PROJECT },
         new WatchDeadline(0, () => 0),
@@ -1658,15 +1665,51 @@ describe("the merge request of the current branch", () => {
       );
       expect(await glab.currentPr(null)).toEqual(context(9));
       expect(calls[0][4]).toBe(
-        "projects/group%2Fproject/merge_requests?state=opened&source_branch=feature%2Fx&per_page=2"
+        "projects/group%2Fproject/merge_requests?state=opened&source_branch=feature%2Fx&per_page=100&page=1"
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
+  const readerIn = (dir: string, mrList: readonly unknown[]) =>
+    new GlabReader(
+      { host: HOST, path: PROJECT },
+      new WatchDeadline(0, () => 0),
+      { exec: server({ mrList }).exec, cwd: dir }
+    );
+
+  test("a merge request from a fork with the same branch name is skipped beside the local one", async () => {
+    const dir = checkout("topic");
+    try {
+      expect(
+        await readerIn(dir, [fromFork(3), local(4)]).currentPr(null)
+      ).toEqual(context(4));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a merge request from a fork alone is not the current branch's", async () => {
+    const dir = checkout("topic");
+    try {
+      const found = await readerIn(dir, [fromFork(3)])
+        .currentPr(null)
+        .then(
+          (pr): object => pr,
+          (error: WatcherQueryError): object => error.failure
+        );
+      expect(found).toMatchObject({
+        kind: "invalid-context-url",
+        detail: expect.stringContaining("no open merge request"),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("no open merge request, or two, names the branch and says to pass --pr", async () => {
-    for (const mrList of [[], [{ iid: 1 }, { iid: 2 }]]) {
+    for (const mrList of [[], [local(1), local(2)]]) {
       const dir = checkout("topic");
       try {
         const { exec } = server({ mrList });
