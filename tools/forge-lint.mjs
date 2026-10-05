@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// The growth check reads the allowlist at the merge base, so the branch that first adds this file (F1) sets its own starting counts.
+
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
@@ -153,9 +155,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     baseline = baselineAllowlist(root, ref);
     if (baseline === null) console.log(`forge-lint: no commit between ${ref} and HEAD has tools/forge-lint.mjs; this branch adds it, growth not checked`);
   } catch (error) {
-    const reason = `cannot read the allowlist at the merge base with ${ref}: ${error.message.split("\n")[0]}`;
-    if (explicit === undefined) console.log(`forge-lint: ${reason}; growth not checked`);
-    else unreadable.push(reason);
+    unreadable.push(
+      `forge-lint: cannot read the allowlist at the merge base with ${ref}: ${error.message.split("\n")[0]}; fetch ${ref}, or pass --base or set FORGE_LINT_BASE`,
+    );
   }
   const { problems, allowlisted, files } = check(root, ALLOWLIST, baseline);
   problems.push(...unreadable);

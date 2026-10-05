@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -247,6 +247,28 @@ test("when no ancestor has the lint file the branch that adds it passes, and a m
     git(root, "commit", "-q", "-m", "no lint yet");
     assert.equal(baselineAllowlist(root, "main"), null);
     assert.throws(() => baselineAllowlist(root, "no-such-ref"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the CLI with the default base and no origin/main exits 1 and names the ref and the fixes", () => {
+  const root = mkdtempSync(join(tmpdir(), "forge-lint-noref-"));
+  try {
+    initRepo(root);
+    mkdirSync(join(root, "plugins/pstack"), { recursive: true });
+    writeFileSync(join(root, "plugins/pstack/README"), "x\n");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "trunk");
+    const env = { ...process.env };
+    delete env.FORGE_LINT_BASE;
+    const run = spawnSync("node", [join(repo, "tools/forge-lint.mjs"), "--root", root], { encoding: "utf8", env });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /origin\/main/);
+    assert.match(run.stderr, /fetch/);
+    assert.match(run.stderr, /--base/);
+    assert.match(run.stderr, /FORGE_LINT_BASE/);
+    assert.doesNotMatch(run.stdout, /growth not checked/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
