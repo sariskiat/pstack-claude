@@ -251,9 +251,9 @@ if (args[0] === 'auth') { console.log('${HOST}'); process.exit(0); }
 console.error('glab: 401 Unauthorized (HTTP 401)'); process.exit(1);`,
       },
       async (fakes) => {
-        expect(await messageOf(listOwnPullRequests(fakes.checkout(remote)))).toBe(
-          "glab api failed: glab: 401 Unauthorized (HTTP 401)"
-        );
+        expect(
+          await messageOf(listOwnPullRequests(fakes.checkout(remote)))
+        ).toBe("glab api failed: glab: 401 Unauthorized (HTTP 401)");
       }
     );
     await withFakes(
