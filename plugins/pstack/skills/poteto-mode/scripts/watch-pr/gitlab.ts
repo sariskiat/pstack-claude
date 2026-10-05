@@ -269,10 +269,11 @@ export function parseMergeRequest(value: unknown): MergeRequest {
 export interface Approvals {
   readonly approved: boolean;
   readonly approvalsLeft: number | null;
+  readonly changesRequested: boolean;
 }
 
-/** CE reports `approved` and `approved_by`. EE adds `approvals_left`. */
-export function parseApprovals(value: unknown): Approvals {
+/** CE reports `approved` and `approved_by`. EE adds `approvals_left`. A reviewer's request for changes shows in `detailed_merge_status` only when the server blocks a merge on it, so the reviewers list is read too. */
+export function parseApprovals(value: unknown, reviewers: unknown): Approvals {
   const approvals = object(value, "approvals");
   const approvedBy = list(approvals.approved_by, "approvals.approved_by");
   const left = optionalInteger(approvals.approvals_left, "approvals_left");
@@ -282,6 +283,9 @@ export function parseApprovals(value: unknown): Approvals {
         ? approvals.approved
         : approvedBy.length > 0 && (left ?? 0) === 0,
     approvalsLeft: left,
+    changesRequested: list(reviewers, "reviewers").some(
+      (reviewer) => object(reviewer, "reviewer").state === "requested_changes"
+    ),
   };
 }
 
@@ -289,7 +293,8 @@ export function approvalSignal(
   status: DetailedMergeStatus,
   approvals: Approvals
 ): ApprovalSignal {
-  if (status === "requested_changes") return "changes-requested";
+  if (status === "requested_changes" || approvals.changesRequested)
+    return "changes-requested";
   if (status === "not_approved" || (approvals.approvalsLeft ?? 0) > 0)
     return "approval-missing";
   return approvals.approved ? "approved" : "none";
@@ -661,9 +666,13 @@ export class GlabReader implements T.ForgeReader {
   async pullRequest(context: T.PrContext): Promise<T.PullRequestFacts> {
     const mrEndpoint = this.mrUrl(context);
     const approvalsEndpoint = this.mrUrl(context, "/approvals");
+    const reviewersEndpoint = this.mrUrl(context, "/reviewers");
     const [mr, approvals] = await Promise.all([
       this.api(mrEndpoint).then(parseMergeRequest),
-      this.api(approvalsEndpoint).then(parseApprovals),
+      Promise.all([
+        this.api(approvalsEndpoint),
+        this.api(reviewersEndpoint),
+      ]).then(([approved, reviewers]) => parseApprovals(approved, reviewers)),
     ]);
     this.reads.set(readKey(context), mr);
     return pullRequestFacts(mr, approvals, context);

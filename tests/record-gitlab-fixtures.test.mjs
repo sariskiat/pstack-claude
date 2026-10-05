@@ -7,6 +7,7 @@ import {
   projectDiscussions,
   projectJobs,
   projectMergeRequest,
+  projectReviewers,
   rewrite,
 } from "../tools/record-gitlab-fixtures.mjs";
 
@@ -118,8 +119,12 @@ describe("the projections keep only what the reader parses", () => {
     const jobs = projectJobs([
       { id: 1, name: "unit", stage: "test", status: "failed", allow_failure: false, failure_reason: "script_failure", web_url: "u", user: { name: "Real Name" }, runner: { description: "corp-runner" } },
     ]);
-    const text = JSON.stringify({ approvals, discussions, jobs });
+    const reviewers = projectReviewers([
+      { user: { name: "Real Name", username: "real.user", avatar_url: "x" }, state: "requested_changes", created_at: "2026-01-01T00:00:00Z" },
+    ]);
+    const text = JSON.stringify({ approvals, discussions, jobs, reviewers });
     for (const leak of ["Real Name", "real.user", "avatar", "corp-runner", "base_sha"]) expect(text).not.toContain(leak);
+    expect(reviewers).toEqual([{ user: { username: "user" }, state: "requested_changes", created_at: "2026-01-01T00:00:00Z" }]);
     expect(approvals.approved_by).toEqual([{ user: { username: "user" }, approved_at: "2026-01-01T00:00:00Z" }]);
     expect(discussions[0].notes[0].author).toEqual({ username: "user" });
     expect(discussions[0].notes[0].position).toEqual({ position_type: "text", new_path: "a.txt", new_line: 1, old_path: null, old_line: null });

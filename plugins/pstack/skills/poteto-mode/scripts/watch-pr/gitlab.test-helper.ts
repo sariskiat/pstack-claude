@@ -31,6 +31,7 @@ export const failure = (code: number, stderr: string): CommandResult => ({
 export interface Served {
   readonly mr?: { readonly iid: number };
   readonly approvals?: unknown;
+  readonly reviewers?: readonly unknown[];
   readonly discussions?: readonly unknown[];
   readonly jobs?: readonly unknown[];
   readonly mrList?: readonly unknown[];
@@ -47,6 +48,7 @@ export function server(served: Served) {
       items.slice((page - 1) * 100, page * 100);
     if (/\/merge_requests\/\d+$/.test(path)) return ok(served.mr);
     if (path.endsWith("/approvals")) return ok(served.approvals);
+    if (path.endsWith("/reviewers")) return ok(served.reviewers ?? []);
     if (path.endsWith("/discussions"))
       return ok(slice(served.discussions ?? []));
     if (path.endsWith("/jobs")) return ok(slice(served.jobs ?? []));

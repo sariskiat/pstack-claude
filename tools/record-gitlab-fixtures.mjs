@@ -5,9 +5,9 @@
 //
 //   bun tools/record-gitlab-fixtures.mjs <host> <project-path> <out-dir> <name>=<iid>...
 //
-// Per name it writes mr-<name>.json and approvals-<name>.json. It adds
-// discussions-<name>.json and, when the merge request has a head pipeline,
-// jobs-<name>.json. glab must be logged in to <host>.
+// Per name it writes mr-<name>.json, approvals-<name>.json,
+// reviewers-<name>.json, and discussions-<name>.json. When the merge request has
+// a head pipeline it adds jobs-<name>.json. glab must be logged in to <host>.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -68,6 +68,12 @@ export const projectApprovals = (approvals) => ({
   })),
 });
 
+export const projectReviewers = (reviewers) =>
+  reviewers.map((reviewer) => ({
+    user: { username: "user" },
+    ...pick(reviewer, ["state", "created_at"]),
+  }));
+
 export const projectDiscussions = (discussions) =>
   discussions.map((discussion) => ({
     ...pick(discussion, ["id", "individual_note"]),
@@ -93,6 +99,7 @@ export function record({ host, path, outDir, scenarios }) {
     const mr = glab(host, `${project}/merge_requests/${iid}`);
     write(`mr-${name}.json`, projectMergeRequest(mr));
     write(`approvals-${name}.json`, projectApprovals(glab(host, `${project}/merge_requests/${iid}/approvals`)));
+    write(`reviewers-${name}.json`, projectReviewers(glab(host, `${project}/merge_requests/${iid}/reviewers`)));
     write(`discussions-${name}.json`, projectDiscussions(glab(host, `${project}/merge_requests/${iid}/discussions?per_page=100`)));
     if (mr.head_pipeline)
       write(`jobs-${name}.json`, projectJobs(glab(host, `${project}/pipelines/${mr.head_pipeline.id}/jobs?per_page=100`)));

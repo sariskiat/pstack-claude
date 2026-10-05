@@ -105,7 +105,11 @@ describe("detailed_merge_status to MergeStateStatus", () => {
       ["preparing", "UNKNOWN"],
       ["approvals_syncing", "UNKNOWN"],
     ];
-  const none: Approvals = { approved: false, approvalsLeft: null };
+  const none: Approvals = {
+    approved: false,
+    approvalsLeft: null,
+    changesRequested: false,
+  };
 
   test.each(TABLE.filter(([, state]) => state !== "UNKNOWN"))(
     "%s is %s",
@@ -251,51 +255,72 @@ describe("approvals to ReviewDecision", () => {
 
   test("no approval on a server that has no approval rules is no decision", () => {
     expect(
-      decision("mergeable", parseApprovals(fixture("approvals-green.json")))
+      decision("mergeable", parseApprovals(fixture("approvals-green.json"), []))
     ).toBeNull();
   });
 
   test("one approval on the recorded Community Edition response is APPROVED", () => {
     expect(
-      decision("mergeable", parseApprovals(fixture("approvals-approved.json")))
+      decision(
+        "mergeable",
+        parseApprovals(fixture("approvals-approved.json"), [])
+      )
     ).toBe("APPROVED");
   });
 
   test("approvals still missing are REVIEW_REQUIRED (documented Enterprise shape, not recorded)", () => {
-    const missing = parseApprovals({
-      approvals_required: 2,
-      approvals_left: 1,
-      approved_by: [
-        { user: { username: "user" }, approved_at: "2026-01-01T00:00:00Z" },
-      ],
-    });
+    const missing = parseApprovals(
+      {
+        approvals_required: 2,
+        approvals_left: 1,
+        approved_by: [
+          { user: { username: "user" }, approved_at: "2026-01-01T00:00:00Z" },
+        ],
+      },
+      []
+    );
     expect(decision("mergeable", missing)).toBe("REVIEW_REQUIRED");
   });
 
   test("required approvals given are APPROVED without an approved flag", () => {
-    const met = parseApprovals({
-      approvals_required: 2,
-      approvals_left: 0,
-      approved_by: [
-        { user: { username: "user" } },
-        { user: { username: "other" } },
-      ],
-    });
+    const met = parseApprovals(
+      {
+        approvals_required: 2,
+        approvals_left: 0,
+        approved_by: [
+          { user: { username: "user" } },
+          { user: { username: "other" } },
+        ],
+      },
+      []
+    );
     expect(decision("mergeable", met)).toBe("APPROVED");
   });
 
   test("the not_approved status is REVIEW_REQUIRED even when the approvals read says approved", () => {
     expect(
-      decision("not_approved", { approved: true, approvalsLeft: null })
+      decision("not_approved", {
+        approved: true,
+        approvalsLeft: null,
+        changesRequested: false,
+      })
     ).toBe("REVIEW_REQUIRED");
   });
 
   test("the requested_changes status wins over an approval and a missing approval", () => {
     expect(
-      decision("requested_changes", { approved: true, approvalsLeft: 0 })
+      decision("requested_changes", {
+        approved: true,
+        approvalsLeft: 0,
+        changesRequested: false,
+      })
     ).toBe("CHANGES_REQUESTED");
     expect(
-      decision("requested_changes", { approved: false, approvalsLeft: 2 })
+      decision("requested_changes", {
+        approved: false,
+        approvalsLeft: 2,
+        changesRequested: false,
+      })
     ).toBe("CHANGES_REQUESTED");
   });
 
@@ -307,17 +332,34 @@ describe("approvals to ReviewDecision", () => {
     ])[] = [
       [
         "requested_changes",
-        { approved: true, approvalsLeft: 1 },
+        { approved: true, approvalsLeft: 1, changesRequested: false },
+        "changes-requested",
+      ],
+      [
+        "mergeable",
+        { approved: true, approvalsLeft: 0, changesRequested: true },
         "changes-requested",
       ],
       [
         "not_approved",
-        { approved: true, approvalsLeft: 0 },
+        { approved: true, approvalsLeft: 0, changesRequested: false },
         "approval-missing",
       ],
-      ["mergeable", { approved: true, approvalsLeft: 1 }, "approval-missing"],
-      ["mergeable", { approved: true, approvalsLeft: 0 }, "approved"],
-      ["mergeable", { approved: false, approvalsLeft: null }, "none"],
+      [
+        "mergeable",
+        { approved: true, approvalsLeft: 1, changesRequested: false },
+        "approval-missing",
+      ],
+      [
+        "mergeable",
+        { approved: true, approvalsLeft: 0, changesRequested: false },
+        "approved",
+      ],
+      [
+        "mergeable",
+        { approved: false, approvalsLeft: null, changesRequested: false },
+        "none",
+      ],
     ];
     for (const [status, approvals, expected] of signals)
       expect(approvalSignal(status, approvals)).toBe(expected);
@@ -332,8 +374,38 @@ describe("approvals to ReviewDecision", () => {
     ]);
   });
 
+  test("a reviewer's request for changes is CHANGES_REQUESTED although the status says mergeable (recorded)", () => {
+    const changes = parseApprovals(
+      fixture("approvals-green.json"),
+      fixture("reviewers-changes.json")
+    );
+    expect(changes.changesRequested).toBe(true);
+    expect(decision("mergeable", changes)).toBe("CHANGES_REQUESTED");
+    expect(decision("mergeable", { ...changes, approved: true })).toBe(
+      "CHANGES_REQUESTED"
+    );
+  });
+
+  test("reviewers who have not requested changes do not block", () => {
+    const states = ["unreviewed", "review_started", "reviewed", "approved"];
+    const approvals = fixture("approvals-green.json");
+    expect(
+      parseApprovals(
+        approvals,
+        states.map((state) => ({ user: { username: "user" }, state }))
+      ).changesRequested
+    ).toBe(false);
+    expect(parseApprovals(approvals, []).changesRequested).toBe(false);
+  });
+
+  test("a reviewers response that is not a list is refused", () => {
+    expect(() =>
+      parseApprovals(fixture("approvals-green.json"), { message: "x" })
+    ).toThrow(/reviewers/);
+  });
+
   test("a response without approved_by is not an approvals response", () => {
-    expect(() => parseApprovals({ approved: true })).toThrow(/approved_by/);
+    expect(() => parseApprovals({ approved: true }, [])).toThrow(/approved_by/);
   });
 });
 
@@ -856,6 +928,21 @@ const SCENARIOS: readonly {
     },
   },
   {
+    name: "a reviewer's request for changes blocks at the merge gate while GitLab still says mergeable (recorded)",
+    served: {
+      mr: fixture("mr-changes.json"),
+      approvals: fixture("approvals-green.json"),
+      reviewers: fixture("reviewers-changes.json"),
+      jobs: fixture("jobs-green.json"),
+    },
+    expect: ({ decision }) => {
+      expect(decision).toMatchObject({
+        kind: "blocker",
+        blocker: { kind: "merge-gate", reason: "changes-requested" },
+      });
+    },
+  },
+  {
     name: "requested changes block at the merge gate (status only, not recorded)",
     served: {
       mr: withStatus("mr-green.json", "requested_changes"),
@@ -981,13 +1068,14 @@ describe("recorded merge requests through the unchanged policy", () => {
     expect(decision.kind).toBe("ready");
   });
 
-  test("one poll of an open merge request makes 5 glab calls, all of them reads of the same project", async () => {
+  test("one poll of an open merge request makes 6 glab calls, all of them reads of the same project", async () => {
     const { calls } = await snapshot(SCENARIOS[0].served);
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(6);
     expect(calls.map((argv) => argv[4].replace(/\?.*/, ""))).toEqual(
       expect.arrayContaining([
         "projects/group%2Fproject/merge_requests/1",
         "projects/group%2Fproject/merge_requests/1/approvals",
+        "projects/group%2Fproject/merge_requests/1/reviewers",
         "projects/group%2Fproject/merge_requests/1/discussions",
         `projects/group%2Fproject/pipelines/${fixture("mr-green.json").head_pipeline.id}/jobs`,
       ])
@@ -1018,6 +1106,7 @@ describe("commands never carry a value that was not checked", () => {
     expect(endpoints(calls)).toEqual([
       "projects/platform%2Ftools%2Fteam%2Fapp/merge_requests/1",
       "projects/platform%2Ftools%2Fteam%2Fapp/merge_requests/1/approvals",
+      "projects/platform%2Ftools%2Fteam%2Fapp/merge_requests/1/reviewers",
     ]);
   });
 
