@@ -182,7 +182,7 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/transport.test.ts": {
       "kind": "policy",
-      "why": "Replays a repository with no checks configured through the real reader, which the port's watcher reports as its own state.",
+      "why": "Replays a repository with no checks configured through the real reader, which the port's watcher reports as its own state. Runs the fake gh once before each CLI run so its first start does not count against a deadline, and checks for a leftover gh process by its path, because a fake killed before it starts never writes a pid.",
       "since": "0.9.56",
       "upstream": "not-proposed"
     },

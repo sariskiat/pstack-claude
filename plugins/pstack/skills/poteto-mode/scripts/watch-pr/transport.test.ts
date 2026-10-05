@@ -26,13 +26,12 @@ function run(scenario: string, extra: string[] = []) {
   writeFileSync(
     gh,
     `#!${process.execPath}
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 if (args[0] === 'warm') process.exit(0);
 const scenario = process.env.WATCH_FIXTURE;
 appendFileSync(process.env.WATCH_CALLS, JSON.stringify(args) + '\\n');
 if (scenario === 'slow') {
-  writeFileSync(process.env.WATCH_PID, String(process.pid));
   await new Promise(resolve => setTimeout(resolve, 2000));
 }
 const noCi = scenario.startsWith('no-ci');
@@ -74,7 +73,6 @@ console.log(JSON.stringify(value));
   );
   const callsFile = join(dir, "calls.jsonl");
   writeFileSync(callsFile, "");
-  const pidFile = join(dir, "pid");
   const started = performance.now();
   const result = spawnSync(
     process.execPath,
@@ -86,7 +84,6 @@ console.log(JSON.stringify(value));
         PATH: `${bin}:${process.env.PATH}`,
         WATCH_FIXTURE: scenario,
         WATCH_CALLS: callsFile,
-        WATCH_PID: pidFile,
       },
     }
   );
@@ -98,7 +95,7 @@ console.log(JSON.stringify(value));
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as string[]),
-    pidFile,
+    gh,
   };
 }
 
@@ -180,6 +177,5 @@ it("cancels an in-flight command at the CLI deadline", () => {
   expect(result.status).toBe(5);
   expect(result.elapsed).toBeLessThan(1500);
   expect(JSON.parse(result.stdout.trim())).toMatchObject({ kind: "TIMEOUT" });
-  const pid = Number(readFileSync(result.pidFile, "utf8"));
-  expect(() => process.kill(pid, 0)).toThrow();
+  expect(spawnSync("pgrep", ["-f", result.gh]).status).toBe(1);
 });
