@@ -116,7 +116,7 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/orch/orch.test.ts": {
       "kind": "policy",
-      "why": "Covers the guards the port adds to orch/store.ts.",
+      "why": "Covers the guards the port adds to orch/store.ts. Sets a 30 s default test timeout because the Graphite fixture tests spawn git and gt dozens of times and run past 5 s under CPU load.",
       "since": "0.9.47",
       "upstream": "not-proposed"
     },
