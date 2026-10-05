@@ -375,6 +375,32 @@ console.log(JSON.stringify(args[3].includes("page=1") ? [{ iid: 3, state: "merge
     );
   });
 
+  test("a GitLab list with a bad record keeps the rest and hands the warning to the audit", () => {
+    withBins(
+      {
+        glab: `if (args[0] === "auth") { console.log("gitlab.example.com"); process.exit(0); }
+console.log(JSON.stringify(args[3].includes("page=1") ? [{ iid: 3, state: "opened", source_branch: "a", sha: null }, { iid: 4, state: "merged", source_branch: "b", sha: null }] : []));`,
+      },
+      (root) => {
+        const warnings = [];
+        const listed = JSON.parse(runListPrs(checkout(root, "https://gitlab.example.com/group/project.git"), (line) => warnings.push(line)));
+        expect(listed).toEqual([{ number: 4, state: "MERGED", headRefName: "b", headRefOid: null, ref: "!4" }]);
+        expect(warnings).toEqual(["warn: skipped merge request !3, which is not in the expected shape"]);
+      },
+    );
+  });
+
+  test("the audit passes its warn to the listing", () => {
+    const fixture = createFixture();
+    const { warnings } = runAudit(fixture, {
+      listPrs: (repo, warn) => {
+        warn("warn: skipped merge request !9, which is not in the expected shape");
+        return "[]";
+      },
+    });
+    expect(warnings).toEqual(["warn: skipped merge request !9, which is not in the expected shape"]);
+  });
+
   test("a forge it cannot resolve fails with the ForgeError code in the message", () => {
     const noGitHubRemote = "none of the git remotes configured for this repository point to a known GitHub host";
     withBins({ glab: `console.log("gitlab.com");`, gh: `console.error("${noGitHubRemote}"); process.exit(1);` }, (root) => {

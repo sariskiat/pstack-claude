@@ -11,8 +11,13 @@ export interface ListedPr {
   readonly number: number;
   readonly state: "OPEN" | "MERGED" | "CLOSED";
   readonly headRefName: string;
-  readonly headRefOid: string;
+  readonly headRefOid: string | null;
   readonly ref?: string;
+}
+
+export interface ListOptions {
+  readonly glabTimeoutMs?: number;
+  readonly warn?: (line: string) => void;
 }
 
 const LIST_TIMEOUT_MS = 60_000;
@@ -58,39 +63,46 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseMergeRequest(value: unknown): ListedPr {
-  const state = isRecord(value)
-    ? STATE_BY_MERGE_REQUEST_STATE.get(String(value.state))
-    : undefined;
+/** A merged or closed merge request may have lost its sha, as the single merge request read in watch-pr allows. */
+function parseMergeRequest(
+  value: unknown
+): ListedPr | { readonly skipped: string } {
+  if (!isRecord(value)) return { skipped: "a list item that is not an object" };
+  const iid = value.iid;
+  if (typeof iid !== "number" || !Number.isSafeInteger(iid) || iid <= 0)
+    return { skipped: "a merge request without a valid iid" };
+  const state = STATE_BY_MERGE_REQUEST_STATE.get(String(value.state));
+  const sha =
+    typeof value.sha === "string" && OBJECT_ID.test(value.sha)
+      ? value.sha
+      : value.sha === null && state !== "OPEN"
+        ? null
+        : undefined;
   if (
-    !isRecord(value) ||
-    typeof value.iid !== "number" ||
-    !Number.isSafeInteger(value.iid) ||
-    value.iid <= 0 ||
     state === undefined ||
     typeof value.source_branch !== "string" ||
     value.source_branch === "" ||
-    typeof value.sha !== "string" ||
-    !OBJECT_ID.test(value.sha)
+    sha === undefined
   )
-    throw new Error(
-      "a merge request in the GitLab list is not in the expected shape"
-    );
+    return {
+      skipped: `merge request !${iid}, which is not in the expected shape`,
+    };
   return {
-    number: value.iid,
+    number: iid,
     state,
     headRefName: value.source_branch,
-    headRefOid: value.sha,
-    ref: `!${value.iid}`,
+    headRefOid: sha,
+    ref: `!${iid}`,
   };
 }
 
 async function gitlabMergeRequests(
-  project: ProjectRef
+  project: ProjectRef,
+  warn: (line: string) => void
 ): Promise<readonly ListedPr[]> {
   const endpoint = `projects/${encodeURIComponent(project.path)}/merge_requests?scope=created_by_me&state=all&order_by=updated_at`;
   const listed: ListedPr[] = [];
-  for (let page = 1; page <= PAGE_LIMIT; page++) {
+  for (let page = 1; ; page++) {
     const result = await capture(
       [
         "glab",
@@ -105,20 +117,32 @@ async function gitlabMergeRequests(
     const batch: unknown = JSON.parse(result.stdout);
     if (!Array.isArray(batch))
       throw new Error("the GitLab merge request list is not an array");
-    listed.push(...batch.map(parseMergeRequest));
+    if (batch.length === 0) return listed;
+    if (page > PAGE_LIMIT) {
+      warn(
+        `warn: more than ${PAGE_LIMIT * PAGE_SIZE} merge requests; only the ${PAGE_LIMIT * PAGE_SIZE} most recently updated are listed`
+      );
+      return listed;
+    }
+    for (const item of batch) {
+      const parsed = parseMergeRequest(item);
+      if ("skipped" in parsed) warn(`warn: skipped ${parsed.skipped}`);
+      else listed.push(parsed);
+    }
     if (batch.length < PAGE_SIZE) return listed;
   }
-  throw new Error(
-    `more than ${PAGE_LIMIT * PAGE_SIZE} merge requests, so a partial list is refused`
-  );
 }
 
 export async function listOwnPullRequests(
   cwd: string,
-  options: { readonly glabTimeoutMs?: number } = {}
+  options: ListOptions = {}
 ): Promise<readonly ListedPr[]> {
   const forge = await checkoutForge(cwd, options);
-  if (forge.kind === "gitlab") return gitlabMergeRequests(forge.project);
+  if (forge.kind === "gitlab")
+    return gitlabMergeRequests(
+      forge.project,
+      options.warn ?? ((line) => process.stderr.write(`${line}\n`))
+    );
   const result = await capture(GITHUB_LIST, LIST_TIMEOUT_MS, cwd);
   if (result.code !== 0) {
     const line = firstLine(result.stderr);

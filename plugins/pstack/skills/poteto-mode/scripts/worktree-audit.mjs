@@ -12,7 +12,7 @@
 //
 // Every probe yields a Fact, { known: true, value } or { known: false }. A hold
 // bucket needs only its own fact; `safe` needs every fact known.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -53,13 +53,20 @@ function git(cwd, ...args) {
     .replace(/\n+$/, "");
 }
 
-export const runListPrs = (repo) =>
-  execFileSync(typeof Bun === "undefined" ? "bun" : process.execPath, [LIST_PRS, repo], {
+// list-prs writes a warning line to stderr for each record it skips; they go to the audit's warnings.
+export function runListPrs(repo, warn = () => {}) {
+  const result = spawnSync(typeof Bun === "undefined" ? "bun" : process.execPath, [LIST_PRS, repo], {
     cwd: repo,
     env: process.env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
+  if (result.error) throw result.error;
+  if (result.status !== 0)
+    throw Object.assign(new Error(result.stderr.trim() || `list-prs exited ${result.status}`), { stderr: result.stderr });
+  for (const line of result.stderr.split("\n")) if (line.trim()) warn(line);
+  return result.stdout;
+}
 
 // `--porcelain -z` output: NUL-separated fields, one record per worktree, the
 // primary worktree first.
@@ -196,7 +203,7 @@ export function audit({
     `could not fetch origin/${trunk}; merged column may be stale`,
   );
   const prs = discover(() => {
-    const list = JSON.parse(listPrs(repo));
+    const list = JSON.parse(listPrs(repo, warn));
     if (!Array.isArray(list)) throw new Error("the pull request list is not a JSON array");
     return list;
   }, "listing pull requests failed; PR column will be empty");

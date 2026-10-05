@@ -252,19 +252,82 @@ describe("a GitLab checkout lists its own merge requests through glab", () => {
     );
   });
 
-  test("refuses a list it cannot finish", async () => {
-    const full = Array.from({ length: 100 }, (_, n) => mr(n + 1, "opened"));
-    const pages = Object.fromEntries(
-      Array.from({ length: 10 }, (_, n) => [String(n + 1), full])
+  const listWith = async (cwd: string) => {
+    const warnings: string[] = [];
+    const listed = await listOwnPullRequests(cwd, {
+      warn: (line) => warnings.push(line),
+    });
+    return { listed, warnings };
+  };
+
+  test("a merged or closed merge request without a sha is listed with no head, and the rest of the list stays", async () => {
+    await withFakes(
+      {
+        glab: glabScript({
+          "1": [
+            { ...mr(4, "merged"), sha: null },
+            { ...mr(5, "closed"), sha: null },
+            mr(6, "opened"),
+          ],
+        }),
+      },
+      async (fakes) => {
+        const { listed, warnings } = await listWith(fakes.checkout(remote));
+        expect(listed.map((pr) => [pr.ref, pr.state, pr.headRefOid])).toEqual([
+          ["!4", "MERGED", null],
+          ["!5", "CLOSED", null],
+          ["!6", "OPEN", SHA],
+        ]);
+        expect(warnings).toEqual([]);
+      }
     );
-    await withFakes({ glab: glabScript(pages) }, async (fakes) => {
-      expect(
-        await messageOf(listOwnPullRequests(fakes.checkout(remote)))
-      ).toContain("partial list is refused");
+  });
+
+  test("any other bad record is skipped with a warning and the rest is listed", async () => {
+    await withFakes(
+      {
+        glab: glabScript({
+          "1": [
+            { ...mr(3, "opened"), sha: null },
+            { ...mr(4, "opened"), sha: "--upload-pack=x" },
+            { iid: "5", state: "opened" },
+            mr(6, "opened"),
+          ],
+        }),
+      },
+      async (fakes) => {
+        const { listed, warnings } = await listWith(fakes.checkout(remote));
+        expect(listed.map((pr) => pr.ref)).toEqual(["!6"]);
+        expect(warnings).toEqual([
+          "warn: skipped merge request !3, which is not in the expected shape",
+          "warn: skipped merge request !4, which is not in the expected shape",
+          "warn: skipped a merge request without a valid iid",
+        ]);
+      }
+    );
+  });
+
+  test("a list of exactly 1000 is read in full, and a longer one lists the newest 1000 with a warning instead of failing", async () => {
+    const full = Array.from({ length: 100 }, (_, n) => mr(n + 1, "opened"));
+    const pages = (count: number) =>
+      Object.fromEntries(
+        Array.from({ length: count }, (_, n) => [String(n + 1), full])
+      );
+    await withFakes({ glab: glabScript(pages(10)) }, async (fakes) => {
+      const { listed, warnings } = await listWith(fakes.checkout(remote));
+      expect(listed).toHaveLength(1000);
+      expect(warnings).toEqual([]);
+    });
+    await withFakes({ glab: glabScript(pages(11)) }, async (fakes) => {
+      const { listed, warnings } = await listWith(fakes.checkout(remote));
+      expect(listed).toHaveLength(1000);
+      expect(warnings).toEqual([
+        "warn: more than 1000 merge requests; only the 1000 most recently updated are listed",
+      ]);
     });
   });
 
-  test("fails on a glab error with its first line, and on a merge request in the wrong shape", async () => {
+  test("fails on a glab error with its first line", async () => {
     await withFakes(
       {
         glab: `
@@ -275,29 +338,6 @@ console.error('glab: 401 Unauthorized (HTTP 401)'); process.exit(1);`,
         expect(
           await messageOf(listOwnPullRequests(fakes.checkout(remote)))
         ).toBe("glab api failed: glab: 401 Unauthorized (HTTP 401)");
-      }
-    );
-    await withFakes(
-      { glab: glabScript({ "1": [{ iid: "3", state: "opened" }] }) },
-      async (fakes) => {
-        expect(
-          await messageOf(listOwnPullRequests(fakes.checkout(remote)))
-        ).toContain("not in the expected shape");
-      }
-    );
-  });
-
-  test("a sha that is not a commit id is refused", async () => {
-    await withFakes(
-      {
-        glab: glabScript({
-          "1": [{ ...mr(3, "opened"), sha: "--upload-pack=x" }],
-        }),
-      },
-      async (fakes) => {
-        expect(
-          await messageOf(listOwnPullRequests(fakes.checkout(remote)))
-        ).toContain("not in the expected shape");
       }
     );
   });
