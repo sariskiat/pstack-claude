@@ -9,7 +9,11 @@ import {
   type ShippingService,
 } from "./shipping.ts";
 
-const context = { owner: "owner", repo: "repo", number: parsePrNumber(1) };
+const context = {
+  host: "github.com",
+  path: "owner/repo",
+  number: parsePrNumber(1),
+};
 const empty: LandingRecord = {
   revision: {
     context,

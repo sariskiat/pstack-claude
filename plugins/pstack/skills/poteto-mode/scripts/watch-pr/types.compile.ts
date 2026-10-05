@@ -10,8 +10,8 @@ import type {
 type ReadyVerdict = Extract<TerminalVerdict, { readonly kind: "READY" }>;
 
 const context = {
-  owner: "octocat",
-  repo: "hello-world",
+  host: "github.com",
+  path: "octocat/hello-world",
   number: parsePrNumber(123),
 } satisfies PrContext;
 const cleanCi = {

@@ -1,4 +1,5 @@
 import { WatcherQueryError } from "./github.ts";
+import { GITHUB_HOST } from "../forge/forge.ts";
 import { parsePrNumber, type PrContext } from "./types.ts";
 
 export interface LandingRevision {
@@ -41,14 +42,47 @@ export function flag(value: unknown, label: string): boolean {
   return value;
 }
 
+// The JSON wire shape of a GitHub context stays {owner, repo, number}. Saved
+// landing records and verdict consumers read it. Other hosts use {host, path}.
 export function parseContext(value: unknown): PrContext {
   const fields = object(value, "PR context");
+  if (fields.host !== undefined)
+    return {
+      host: text(fields.host, "host"),
+      path: text(fields.path, "path"),
+      number: parsePrNumber(fields.number),
+    };
   const owner = text(fields.owner, "owner");
   const repo = text(fields.repo, "repo");
   if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo))
     invalid("owner and repo must be individual repository names");
-  return { owner, repo, number: parsePrNumber(fields.number) };
+  return {
+    host: GITHUB_HOST,
+    path: `${owner}/${repo}`,
+    number: parsePrNumber(fields.number),
+  };
 }
+
+function isPrContext(value: unknown): value is PrContext {
+  if (typeof value !== "object" || value === null) return false;
+  const fields = value as Record<string, unknown>;
+  return (
+    typeof fields.host === "string" &&
+    typeof fields.path === "string" &&
+    typeof fields.number === "number"
+  );
+}
+
+export function contextToWire(context: PrContext): Record<string, unknown> {
+  const [owner, repo, ...rest] = context.path.split("/");
+  return context.host === GITHUB_HOST && repo !== undefined && rest.length === 0
+    ? { owner, repo, number: context.number }
+    : { host: context.host, path: context.path, number: context.number };
+}
+
+/** JSON.stringify replacer that writes every PrContext in its wire shape. */
+export const wireReplacer = (_key: string, value: unknown): unknown =>
+  isPrContext(value) ? contextToWire(value) : value;
 
 export function parseLandingRevision(
   value: unknown,
@@ -73,8 +107,8 @@ export function sameLandingRevision(
   b: LandingRevision
 ): boolean {
   return (
-    a.context.owner.toLowerCase() === b.context.owner.toLowerCase() &&
-    a.context.repo.toLowerCase() === b.context.repo.toLowerCase() &&
+    a.context.host.toLowerCase() === b.context.host.toLowerCase() &&
+    a.context.path.toLowerCase() === b.context.path.toLowerCase() &&
     a.context.number === b.context.number &&
     a.headRefOid === b.headRefOid &&
     a.baseRefName === b.baseRefName &&

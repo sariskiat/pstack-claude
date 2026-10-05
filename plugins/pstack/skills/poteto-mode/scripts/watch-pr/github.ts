@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { DeadlineExceeded, type WatchDeadline } from "./deadline.ts";
 import type * as T from "./types.ts";
 import { nonEmpty, parsePrNumber } from "./types.ts";
+import { GITHUB_HOST, ownerAndName } from "../forge/forge.ts";
 export const REVIEW_THREADS_QUERY = `query ReviewThreads($owner: String!, $repo: String!, $pr: Int!, $after: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $pr) {
@@ -208,7 +209,7 @@ const reviewDecision = (value: unknown): T.ReviewDecision =>
     REVIEW_DECISIONS,
     "pull request.reviewDecision"
   );
-function parseRemote(value: string): T.Repository | null {
+function parseRemote(value: string): T.ProjectRef | null {
   let normalized = value.trim();
   if (normalized.startsWith("git@github.com:"))
     normalized = `https://github.com/${normalized.slice(15)}`;
@@ -231,7 +232,7 @@ function parseRemote(value: string): T.Repository | null {
       parts.length !== 2
     )
       return null;
-    return { owner: parts[0], repo: parts[1] };
+    return { host: GITHUB_HOST, path: `${parts[0]}/${parts[1]}` };
   } catch {
     return null;
   }
@@ -253,8 +254,8 @@ function parsePrUrl(value: string): T.PrContext {
     )
       throw new Error("not a canonical GitHub pull URL");
     return {
-      owner: parts[0],
-      repo: parts[1],
+      host: GITHUB_HOST,
+      path: `${parts[0]}/${parts[1]}`,
       number: parsePrNumber(Number(parts[3])),
     };
   } catch (error) {
@@ -498,6 +499,7 @@ function graphqlArgs(
   query: string,
   context: T.PrContext
 ): [string, ...string[]] {
+  const { owner, name } = ownerAndName(context);
   return [
     "gh",
     "api",
@@ -505,9 +507,9 @@ function graphqlArgs(
     "-f",
     `query=${query}`,
     "-f",
-    `owner=${context.owner}`,
+    `owner=${owner}`,
     "-f",
-    `repo=${context.repo}`,
+    `repo=${name}`,
     "-F",
     `pr=${context.number}`,
   ];
@@ -521,7 +523,7 @@ export class GhGitHubReader implements T.GitHubReader {
   private runJson(argv: readonly [string, ...string[]]): Promise<unknown> {
     return runJson(argv, this.deadline);
   }
-  async originRepo(): Promise<T.Repository | null> {
+  async originRepo(): Promise<T.ProjectRef | null> {
     const result = await this.run(["git", "remote", "get-url", "origin"]);
     return result.code === 0 ? parseRemote(result.stdout) : null;
   }
@@ -544,7 +546,7 @@ export class GhGitHubReader implements T.GitHubReader {
         "view",
         String(context.number),
         "--repo",
-        `${context.owner}/${context.repo}`,
+        context.path,
         "--json",
         "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,baseRefOid,state,mergedAt,isDraft",
       ]),
@@ -559,7 +561,7 @@ export class GhGitHubReader implements T.GitHubReader {
         "view",
         String(context.number),
         "--repo",
-        `${context.owner}/${context.repo}`,
+        context.path,
         "--json",
         "headRefOid,baseRefName,baseRefOid",
       ]),
@@ -568,14 +570,14 @@ export class GhGitHubReader implements T.GitHubReader {
     return parseLandingRevision(value, context);
   }
   async openPullRequests(
-    repository: T.Repository
+    repository: T.ProjectRef
   ): Promise<readonly T.OpenPullRequest[]> {
     const value = await this.runJson([
       "gh",
       "pr",
       "list",
       "--repo",
-      `${repository.owner}/${repository.repo}`,
+      repository.path,
       "--state",
       "open",
       "--limit",
@@ -599,8 +601,8 @@ export class GhGitHubReader implements T.GitHubReader {
           headRepository === null || headOwner === null
             ? null
             : {
-                owner: string(headOwner.login, "headRepositoryOwner.login"),
-                repo: string(headRepository.name, "headRepository.name"),
+                host: GITHUB_HOST,
+                path: `${string(headOwner.login, "headRepositoryOwner.login")}/${string(headRepository.name, "headRepository.name")}`,
               },
         headRefName: string(
           object.headRefName,
@@ -620,7 +622,7 @@ export class GhGitHubReader implements T.GitHubReader {
       "checks",
       String(context.number),
       "--repo",
-      `${context.owner}/${context.repo}`,
+      context.path,
       "--json",
       "name,state,description,link,workflow,bucket",
     ]);
@@ -781,22 +783,28 @@ export async function resolveContext(args: {
   readonly repo: string | null;
   readonly pr: T.PrNumber | null;
 }): Promise<T.PrContext> {
+  const project = (owner: string, name: string): T.ProjectRef => ({
+    host: GITHUB_HOST,
+    path: `${owner}/${name}`,
+  });
   if (args.pr !== null && args.owner !== null && args.repo !== null)
-    return { owner: args.owner, repo: args.repo, number: args.pr };
+    return { ...project(args.owner, args.repo), number: args.pr };
   if (args.pr !== null) {
     const origin = await args.reader.originRepo();
-    if (origin !== null)
+    if (origin !== null) {
+      const local = ownerAndName(origin);
       return {
-        owner: args.owner ?? origin.owner,
-        repo: args.repo ?? origin.repo,
+        ...project(args.owner ?? local.owner, args.repo ?? local.name),
         number: args.pr,
       };
+    }
   }
   const inferred = await args.reader.currentPr(args.pr);
+  const current = ownerAndName(inferred);
   if (args.pr === null) {
     // The checkout's PR number means nothing in another repository.
-    const found = `${inferred.owner}/${inferred.repo}`;
-    const requested = `${args.owner ?? inferred.owner}/${args.repo ?? inferred.repo}`;
+    const found = inferred.path;
+    const requested = `${args.owner ?? current.owner}/${args.repo ?? current.name}`;
     if (requested.toLowerCase() !== found.toLowerCase()) {
       const url = `https://github.com/${found}/pull/${inferred.number}`;
       throw new WatcherQueryError({
@@ -808,8 +816,7 @@ export async function resolveContext(args: {
     }
   }
   return {
-    owner: args.owner ?? inferred.owner,
-    repo: args.repo ?? inferred.repo,
+    ...project(args.owner ?? current.owner, args.repo ?? current.name),
     number: args.pr ?? inferred.number,
   };
 }
@@ -820,8 +827,8 @@ export function orderStack(
   const byNumber = new Map(open.map((pr) => [pr.number, pr]));
   const localHead = (pr: T.OpenPullRequest): boolean =>
     pr.headRepository !== null &&
-    pr.headRepository.owner.toLowerCase() === context.owner.toLowerCase() &&
-    pr.headRepository.repo.toLowerCase() === context.repo.toLowerCase();
+    pr.headRepository.host === context.host &&
+    pr.headRepository.path.toLowerCase() === context.path.toLowerCase();
   const byHead = new Map<string, T.OpenPullRequest[]>();
   const invalid = (detail: string): never => {
     throw new WatcherQueryError({

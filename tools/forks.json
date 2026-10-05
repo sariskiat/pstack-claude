@@ -134,7 +134,7 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/cli.test.ts": {
       "kind": "policy",
-      "why": "Supplies the shared deadline and landing revision the port's watcher requires.",
+      "why": "Supplies the shared deadline and landing revision the port's watcher requires. Uses ProjectRef literals and asserts the owner/repo JSON wire shape.",
       "since": "0.9.34",
       "upstream": "not-proposed"
     },
@@ -146,25 +146,25 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/fakes.test-helper.ts": {
       "kind": "policy",
-      "why": "Extends the fake reader with the revision and review fields the port's watcher reads.",
+      "why": "Extends the fake reader with the revision and review fields the port's watcher reads. Uses ProjectRef literals.",
       "since": "0.9.10",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/github.test.ts": {
       "kind": "policy",
-      "why": "Covers the port's check-bucket mapping, repository pairing, and revision fields in the GitHub reader.",
+      "why": "Covers the port's check-bucket mapping, repository pairing, and revision fields in the GitHub reader. Uses ProjectRef literals.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/github.ts": {
       "kind": "policy",
-      "why": "Reads review decision, merge state, and head and base revisions under the shared deadline, and refuses a checkout PR paired with a different explicit repository.",
+      "why": "Reads review decision, merge state, and head and base revisions under the shared deadline, and refuses a checkout PR paired with a different explicit repository. Reads and builds every project reference as ProjectRef {host, path}, and splits owner and name only where GitHub GraphQL needs them.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/policy.test.ts": {
       "kind": "policy",
-      "why": "Covers the review gate and the shared deadline in the poll loop.",
+      "why": "Covers the review gate and the shared deadline in the poll loop. Uses ProjectRef literals.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },
@@ -176,7 +176,7 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/render.ts": {
       "kind": "policy",
-      "why": "Renders the review-required, merge-blocked, and changes-requested states with their next action.",
+      "why": "Renders the review-required, merge-blocked, and changes-requested states with their next action. Writes JSON contexts in the owner/repo wire shape and builds the status-table link from host and path.",
       "since": "0.9.43",
       "upstream": "not-proposed"
     },
@@ -188,13 +188,13 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/types.compile.ts": {
       "kind": "policy",
-      "why": "Adds the landing revision to the compile-time type fixture.",
+      "why": "Adds the landing revision to the compile-time type fixture. Uses a ProjectRef literal.",
       "since": "0.9.34",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/types.ts": {
       "kind": "policy",
-      "why": "Adds the merge gate, landing revision, and deadline failure types the port's watcher reports.",
+      "why": "Adds the merge gate, landing revision, and deadline failure types the port's watcher reports. Names a project as ProjectRef {host, path} in place of Repository {owner, repo}, so nested GitLab groups fit.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },

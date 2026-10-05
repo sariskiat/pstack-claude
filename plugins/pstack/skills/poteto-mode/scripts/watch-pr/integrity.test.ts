@@ -4,6 +4,7 @@ import { fakeReader, pendingCheck, failedCheck } from "./fakes.test-helper.ts";
 import type { FakeReaderOptions } from "./fakes.test-helper.ts";
 import { orderStack, parsePullRequest, WatcherQueryError } from "./github.ts";
 import {
+  contextToWire,
   flag,
   nullableText,
   object,
@@ -26,7 +27,11 @@ import {
   type ProgressVerdict,
 } from "./types.ts";
 
-const context = { owner: "owner", repo: "repo", number: parsePrNumber(1) };
+const context = {
+  host: "github.com",
+  path: "owner/repo",
+  number: parsePrNumber(1),
+};
 const options = {
   interval: 60,
   sweepInterval: 300,
@@ -317,7 +322,7 @@ it("includes a fork PR whose base genuinely depends on a local parent", () => {
     },
     {
       number: parsePrNumber(2),
-      headRepository: { owner: "fork", repo: "repo" },
+      headRepository: { host: "github.com", path: "fork/repo" },
       headRefName: "foreign",
       baseRefName: "base",
     },
@@ -332,7 +337,7 @@ it("does not attach children to a same-named branch in a fork", () => {
   const result = orderStack(context, [
     {
       number: context.number,
-      headRepository: { owner: "fork", repo: "repo" },
+      headRepository: { host: "github.com", path: "fork/repo" },
       headRefName: "feature",
       baseRefName: "main",
     },
@@ -825,6 +830,27 @@ describe("landing validators", () => {
         detail,
       });
     });
+
+  it("keeps the owner/repo wire shape for a GitHub context and round-trips it", () => {
+    const wire = { owner: "Acme", repo: "web", number: 7 };
+    const parsed = parseContext(wire);
+    expect(parsed).toEqual({
+      host: "github.com",
+      path: "Acme/web",
+      number: parsePrNumber(7),
+    });
+    expect(contextToWire(parsed)).toEqual(wire);
+  });
+
+  it("writes a nested-group context with host and path and reads it back", () => {
+    const nested = {
+      host: "gitlab.cjexpress.io",
+      path: "a/b/c",
+      number: parsePrNumber(3),
+    };
+    expect(contextToWire(nested)).toEqual(nested);
+    expect(parseContext(contextToWire(nested))).toEqual(nested);
+  });
 
   it("returns valid values unchanged", () => {
     const fields = { key: 1 };
