@@ -2,7 +2,7 @@ import { parseLandingRevision, type LandingRevision } from "./landing.ts";
 import { spawn } from "node:child_process";
 import { DeadlineExceeded, type WatchDeadline } from "./deadline.ts";
 import type * as T from "./types.ts";
-import { nonEmpty, parsePrNumber } from "./types.ts";
+import { isPrNumber, nonEmpty, parsePrNumber } from "./types.ts";
 import {
   GITHUB_HOST,
   githubOwnerAndName,
@@ -163,6 +163,9 @@ function at(value: unknown, path: readonly string[]): unknown {
   }
   return current;
 }
+/** The one check for a PR or merge request number read from gh or glab output. */
+export const prNumberField = (value: unknown, path: string): T.PrNumber =>
+  isPrNumber(value) ? value : missing(path, value);
 function string(value: unknown, path: string): string {
   if (typeof value !== "string") missing(path, value);
   return value;
@@ -548,7 +551,7 @@ export class GhGitHubReader implements T.ForgeReader {
     const parsed = parsePrUrl(string(object.url, "current PR.url"));
     return {
       ...parsed,
-      number: pr ?? parsePrNumber(object.number, "current PR.number"),
+      number: pr ?? prNumberField(object.number, "current PR.number"),
     };
   }
   async pullRequest(context: T.PrContext): Promise<T.PullRequestFacts> {
@@ -609,7 +612,7 @@ export class GhGitHubReader implements T.ForgeReader {
           ? null
           : record(object.headRepositoryOwner, "headRepositoryOwner");
       return {
-        number: parsePrNumber(object.number, `open PRs[${index}].number`),
+        number: prNumberField(object.number, `open PRs[${index}].number`),
         headRepository:
           headRepository === null || headOwner === null
             ? null

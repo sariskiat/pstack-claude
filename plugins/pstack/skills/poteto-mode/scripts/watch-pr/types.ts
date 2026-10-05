@@ -7,10 +7,13 @@ export type NonEmpty<T> = readonly [T, ...T[]];
 export function nonEmpty<T>(items: readonly T[]): NonEmpty<T> | null {
   return items.length === 0 ? null : [items[0], ...items.slice(1)];
 }
+/** A safe integer, so the number prints back as the same digits in a command or an API path. */
+export const isPrNumber = (value: unknown): value is PrNumber =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 export function parsePrNumber(value: unknown, label = "PR number"): PrNumber {
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0)
+  if (!isPrNumber(value))
     throw new Error(`${label} must be a positive integer`);
-  return value as PrNumber;
+  return value;
 }
 export interface PrContext extends ProjectRef {
   readonly number: PrNumber;

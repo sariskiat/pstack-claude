@@ -9,6 +9,7 @@ import {
   WatcherQueryError,
   commandExit,
   parsePullRequest,
+  prNumberField,
   run,
   unresolvedThreads,
   type CommandResult,
@@ -22,7 +23,7 @@ import {
   type LandingRevision,
 } from "./landing.ts";
 import type * as T from "./types.ts";
-import { nonEmpty, parsePrNumber } from "./types.ts";
+import { nonEmpty } from "./types.ts";
 
 export const MERGE_STATE_BY_STATUS = {
   mergeable: "CLEAN",
@@ -668,7 +669,7 @@ export class GlabReader implements T.ForgeReader {
       });
     return {
       ...this.project,
-      number: parsePrNumber(found[0].iid, "merge request.iid"),
+      number: prNumberField(found[0].iid, "merge request.iid"),
     };
   }
 
@@ -731,7 +732,7 @@ export class GlabReader implements T.ForgeReader {
     return items.map((item, index) => {
       const mr = object(item, `open merge requests[${index}]`);
       return {
-        number: parsePrNumber(mr.iid, `open merge requests[${index}].iid`),
+        number: prNumberField(mr.iid, `open merge requests[${index}].iid`),
         headRepository: fromTargetProject(mr) ? this.project : null,
         headRefName: text(mr.source_branch, "merge request.source_branch"),
         baseRefName: text(mr.target_branch, "merge request.target_branch"),

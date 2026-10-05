@@ -1708,6 +1708,22 @@ describe("the merge request of the current branch", () => {
     }
   });
 
+  test("an iid that is not a safe positive integer is a query error, not a crash", async () => {
+    const dir = checkout("topic");
+    try {
+      for (const iid of ["7", 1e21, 0, 2.5])
+        expect(
+          (
+            await rejection(
+              readerIn(dir, [{ ...local(1), iid }]).currentPr(null)
+            )
+          ).failure
+        ).toMatchObject({ kind: "missing-key", retryable: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("no open merge request, or two, names the branch and says to pass --pr", async () => {
     for (const mrList of [[], [local(1), local(2)]]) {
       const dir = checkout("topic");

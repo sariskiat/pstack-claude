@@ -15,7 +15,13 @@ import { type CliRuntime, main, selectReader } from "./cli.ts";
 import { WatchDeadline } from "./deadline.ts";
 import { GhGitHubReader } from "./github.ts";
 import { GlabReader } from "./gitlab.ts";
-import { HOST, PROJECT, fixture, glabReader } from "./gitlab.test-helper.ts";
+import {
+  HOST,
+  PROJECT,
+  fixture,
+  glabReader,
+  server,
+} from "./gitlab.test-helper.ts";
 
 const REMOTE = `https://${HOST}/${PROJECT}.git`;
 const deadline = () => new WatchDeadline(0, () => 0);
@@ -266,6 +272,36 @@ describe("watch-pr on a GitLab checkout", () => {
     expect(harness.stdout.join("")).toContain(
       `[#1](https://${HOST}/${PROJECT}/-/merge_requests/1)`
     );
+  });
+
+  it("refuses a --pr that is not a safe integer before any glab call", async () => {
+    const { reader, calls } = glabReader({ mr: fixture("mr-green.json") });
+    const harness = runtimeFor(reader);
+    expect(await main(["--pr", "1e21"], harness.runtime)).toBe(64);
+    expect(calls).toEqual([]);
+  });
+
+  it("ends with exit 7, not a crash, when the current branch's merge request has an iid that is not a safe integer", async () => {
+    await inSandbox({}, async (sandbox) => {
+      const { exec } = server({
+        mrList: [{ iid: "7", source_project_id: 42, target_project_id: 42 }],
+      });
+      const reader = new GlabReader({ host: HOST, path: PROJECT }, deadline(), {
+        exec,
+        cwd: sandbox.checkout(REMOTE),
+      });
+      const harness = runtimeFor(reader);
+      expect(await main([], harness.runtime)).toBe(7);
+      expect(JSON.parse(harness.stdout.join(""))).toMatchObject({
+        blocker: {
+          kind: "status-query",
+          failure: {
+            kind: "missing-key",
+            detail: 'invalid merge request.iid: "7"',
+          },
+        },
+      });
+    });
   });
 
   it("refuses --owner and --repo on a GitLab reader", async () => {
