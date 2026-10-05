@@ -95,7 +95,7 @@ export type FailedCheck = Extract<Check, { readonly kind: "failed" }>;
 export type PendingCheck = Extract<Check, { readonly kind: "pending" }>;
 export interface ReportedChecks {
   readonly kind: "reported";
-  readonly source: "gh-pr-checks" | "graphql-rollup";
+  readonly source: "gh-pr-checks" | "graphql-rollup" | "glab-pipeline-jobs";
   readonly checks: NonEmpty<Check>;
 }
 /** `resolveChecks` owns what counts as `no-checks`. */
@@ -266,6 +266,12 @@ export type QueryFailure =
       readonly retryable: false;
       readonly detail: string;
       readonly rawValue: string;
+    }
+  | {
+      readonly kind: "forge-unavailable";
+      readonly retryable: false;
+      readonly code: string;
+      readonly detail: string;
     };
 /**
  * `frontier` names the lowest unmerged PR that is actually waiting, and
@@ -407,7 +413,11 @@ export type QueueTerminalVerdict =
   | BlockerVerdict
   | TimeoutVerdict;
 export type ChecksFastPath =
-  | { readonly kind: "checks"; readonly checks: readonly Check[] }
+  | {
+      readonly kind: "checks";
+      readonly checks: readonly Check[];
+      readonly source?: ReportedChecks["source"];
+    }
   | { readonly kind: "none-reported" }
   | {
       readonly kind: "unusable";

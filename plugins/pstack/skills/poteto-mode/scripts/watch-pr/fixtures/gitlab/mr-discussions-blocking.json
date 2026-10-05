@@ -1,0 +1,31 @@
+{
+  "iid": 4,
+  "title": "Thread lane: unresolved discussion",
+  "state": "opened",
+  "draft": false,
+  "sha": "e6b5a843377da7e543a82fcdb0fe172816706f3f",
+  "source_branch": "lane-thread",
+  "target_branch": "main",
+  "detailed_merge_status": "discussions_not_resolved",
+  "merge_status": "can_be_merged",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": false,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/4",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "b30306bc93fdb7f3d2f18812552ce2b081331797",
+    "head_sha": "e6b5a843377da7e543a82fcdb0fe172816706f3f",
+    "start_sha": "b30306bc93fdb7f3d2f18812552ce2b081331797"
+  },
+  "head_pipeline": {
+    "id": 1765530,
+    "status": "success",
+    "sha": "e6b5a843377da7e543a82fcdb0fe172816706f3f",
+    "ref": "lane-thread",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/group/project/-/pipelines/1765530"
+  }
+}

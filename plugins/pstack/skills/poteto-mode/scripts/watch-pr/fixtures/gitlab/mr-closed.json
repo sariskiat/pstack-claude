@@ -1,0 +1,31 @@
+{
+  "iid": 10,
+  "title": "Closed sample: closed merge request",
+  "state": "closed",
+  "draft": false,
+  "sha": "9c45bf28ef5c47a1a65ccc3aa3df6c4aed3551dc",
+  "source_branch": "closed-sample",
+  "target_branch": "main",
+  "detailed_merge_status": "not_open",
+  "merge_status": "can_be_merged",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/10",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "a0f77dcc91e32ee085bc66e294677d3435d43137",
+    "head_sha": "9c45bf28ef5c47a1a65ccc3aa3df6c4aed3551dc",
+    "start_sha": "a0f77dcc91e32ee085bc66e294677d3435d43137"
+  },
+  "head_pipeline": {
+    "id": 1765539,
+    "status": "success",
+    "sha": "9c45bf28ef5c47a1a65ccc3aa3df6c4aed3551dc",
+    "ref": "closed-sample",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/group/project/-/pipelines/1765539"
+  }
+}

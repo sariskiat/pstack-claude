@@ -1,0 +1,31 @@
+{
+  "iid": 7,
+  "title": "Audit lane: open merge request",
+  "state": "opened",
+  "draft": false,
+  "sha": "4c8195809c10469a8ca2ec35f16c96e7e1d5bf92",
+  "source_branch": "audit-open",
+  "target_branch": "main",
+  "detailed_merge_status": "merge_time",
+  "merge_status": "can_be_merged",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/7",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "a0f77dcc91e32ee085bc66e294677d3435d43137",
+    "head_sha": "4c8195809c10469a8ca2ec35f16c96e7e1d5bf92",
+    "start_sha": "a0f77dcc91e32ee085bc66e294677d3435d43137"
+  },
+  "head_pipeline": {
+    "id": 1765535,
+    "status": "success",
+    "sha": "4c8195809c10469a8ca2ec35f16c96e7e1d5bf92",
+    "ref": "audit-open",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/group/project/-/pipelines/1765535"
+  }
+}

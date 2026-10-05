@@ -1,0 +1,31 @@
+{
+  "iid": 6,
+  "title": "Conflict lane: edit line b",
+  "state": "opened",
+  "draft": false,
+  "sha": "19cc9835e9761610fd0ca3aa1d66af0fe7a7c021",
+  "source_branch": "lane-conflict",
+  "target_branch": "main",
+  "detailed_merge_status": "conflict",
+  "merge_status": "cannot_be_merged",
+  "has_conflicts": true,
+  "blocking_discussions_resolved": true,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/6",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "b30306bc93fdb7f3d2f18812552ce2b081331797",
+    "head_sha": "19cc9835e9761610fd0ca3aa1d66af0fe7a7c021",
+    "start_sha": "b30306bc93fdb7f3d2f18812552ce2b081331797"
+  },
+  "head_pipeline": {
+    "id": 1765533,
+    "status": "success",
+    "sha": "19cc9835e9761610fd0ca3aa1d66af0fe7a7c021",
+    "ref": "lane-conflict",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/group/project/-/pipelines/1765533"
+  }
+}

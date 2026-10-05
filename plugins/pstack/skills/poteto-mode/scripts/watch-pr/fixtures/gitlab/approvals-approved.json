@@ -1,0 +1,13 @@
+{
+  "approved": true,
+  "user_has_approved": true,
+  "user_can_approve": false,
+  "approved_by": [
+    {
+      "user": {
+        "username": "user"
+      },
+      "approved_at": "2026-10-06T02:56:02.364+07:00"
+    }
+  ]
+}

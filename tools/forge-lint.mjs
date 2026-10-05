@@ -11,6 +11,7 @@ const SCOPE = "plugins/pstack";
 const ADAPTER_DIRS = ["plugins/pstack/skills/poteto-mode/scripts/forge/"];
 const ADAPTER_FILES = new Set([
   "plugins/pstack/skills/poteto-mode/scripts/watch-pr/github.ts",
+  "plugins/pstack/skills/poteto-mode/scripts/watch-pr/gitlab.ts",
 ]);
 const TEXT_FILE =
   /(^|\/)[^./]+$|\.(?:[cm]?[jt]sx?|sh|bash|zsh|mdx?|json|ya?ml|py|toml|txt)$/;

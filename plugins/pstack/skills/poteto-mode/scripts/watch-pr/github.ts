@@ -29,7 +29,7 @@ export const PR_COMMIT_STATUS_QUERY =
 export const PR_CHECK_ROLLUP_QUERY =
   "\nquery PrCheckRollup($owner: String!, $repo: String!, $pr: Int!, $after: String) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      commits(last: 1) {\n        nodes {\n          commit {\n            statusCheckRollup {\n              contexts(first: 100, after: $after) {\n                pageInfo {\n                  hasNextPage\n                  endCursor\n                }\n                nodes {\n                  __typename\n                  ... on CheckRun {\n                    name\n                    status\n                    conclusion\n                    detailsUrl\n                  }\n                  ... on StatusContext {\n                    context\n                    state\n                    targetUrl\n                  }\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
 
-interface CommandResult {
+export interface CommandResult {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
@@ -50,7 +50,7 @@ export class ChecksUnavailable extends WatcherQueryError {
 }
 const firstLine = (value: string): string =>
   value.trim().split(/\r?\n/, 1)[0]?.slice(0, 240) ?? "";
-function run(
+export function run(
   argv: readonly [string, ...string[]],
   deadline: WatchDeadline
 ): Promise<CommandResult> {
@@ -421,30 +421,14 @@ function passKey(comment: T.ReviewComment | null): string | null {
   }
   return null;
 }
-export function parseReviewThreads(value: unknown): readonly T.ReviewThread[] {
-  const nodes = list(
-    at(value, ["data", "repository", "pullRequest", "reviewThreads", "nodes"]),
-    "reviewThreads.nodes"
-  );
-  const threads: {
-    readonly id: string;
-    readonly firstComment: T.ReviewComment | null;
-    readonly resolved: boolean;
-  }[] = [];
-  for (const node of nodes) {
-    const thread = record(node, "review thread");
-    if (typeof thread.isResolved !== "boolean")
-      missing("review thread.isResolved", thread.isResolved);
-    const comments = list(
-      at(thread, ["comments", "nodes"]),
-      "review thread.comments.nodes"
-    );
-    threads.push({
-      id: string(thread.id, "review thread.id"),
-      firstComment: comments.length === 0 ? null : parseComment(comments[0]),
-      resolved: thread.isResolved,
-    });
-  }
+export interface ThreadCandidate {
+  readonly id: string;
+  readonly firstComment: T.ReviewComment | null;
+  readonly resolved: boolean;
+}
+export function unresolvedThreads(
+  threads: readonly ThreadCandidate[]
+): readonly T.ReviewThread[] {
   const keys = new Set<string>();
   let keyless = false;
   for (const thread of threads) {
@@ -462,6 +446,28 @@ export function parseReviewThreads(value: unknown): readonly T.ReviewThread[] {
       isBugbot: isBugbot(firstComment),
       bugbotReviewPasses: passes,
     }));
+}
+export function parseReviewThreads(value: unknown): readonly T.ReviewThread[] {
+  const nodes = list(
+    at(value, ["data", "repository", "pullRequest", "reviewThreads", "nodes"]),
+    "reviewThreads.nodes"
+  );
+  const threads: ThreadCandidate[] = [];
+  for (const node of nodes) {
+    const thread = record(node, "review thread");
+    if (typeof thread.isResolved !== "boolean")
+      missing("review thread.isResolved", thread.isResolved);
+    const comments = list(
+      at(thread, ["comments", "nodes"]),
+      "review thread.comments.nodes"
+    );
+    threads.push({
+      id: string(thread.id, "review thread.id"),
+      firstComment: comments.length === 0 ? null : parseComment(comments[0]),
+      resolved: thread.isResolved,
+    });
+  }
+  return unresolvedThreads(threads);
 }
 export function parsePullRequest(
   value: unknown,
@@ -751,8 +757,12 @@ export async function resolveChecks(
 ): Promise<T.CheckRead> {
   const fast = await reader.checksFastPath(context);
   const direct = fast.kind === "checks" ? nonEmpty(fast.checks) : null;
-  if (direct !== null)
-    return { kind: "reported", source: "gh-pr-checks", checks: direct };
+  if (fast.kind === "checks" && direct !== null)
+    return {
+      kind: "reported",
+      source: fast.source ?? "gh-pr-checks",
+      checks: direct,
+    };
   const checks: T.Check[] = [];
   let after: string | null = null;
   let headHasRollup = true;

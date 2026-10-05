@@ -1,0 +1,31 @@
+{
+  "iid": 9,
+  "title": "Approval lane: one approval",
+  "state": "opened",
+  "draft": false,
+  "sha": "8235f5c539f16b247f4ff694ff8ab49af9b5ef6c",
+  "source_branch": "lane-approved",
+  "target_branch": "main",
+  "detailed_merge_status": "mergeable",
+  "merge_status": "can_be_merged",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/9",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "a0f77dcc91e32ee085bc66e294677d3435d43137",
+    "head_sha": "8235f5c539f16b247f4ff694ff8ab49af9b5ef6c",
+    "start_sha": "a0f77dcc91e32ee085bc66e294677d3435d43137"
+  },
+  "head_pipeline": {
+    "id": 1765538,
+    "status": "success",
+    "sha": "8235f5c539f16b247f4ff694ff8ab49af9b5ef6c",
+    "ref": "lane-approved",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/group/project/-/pipelines/1765538"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "iid": 14,
+  "title": "Prep sample prep-3",
+  "state": "opened",
+  "draft": false,
+  "sha": "2c3dd2d8c859f864ab2f1f96671cec93595dc78a",
+  "source_branch": "prep-3",
+  "target_branch": "main",
+  "detailed_merge_status": "preparing",
+  "merge_status": "checking",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/14",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": null,
+  "head_pipeline": null
+}
