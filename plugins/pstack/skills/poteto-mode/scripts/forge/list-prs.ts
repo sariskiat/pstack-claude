@@ -1,7 +1,7 @@
 import {
   ForgeError,
   capture,
-  forgeForCheckout,
+  gitlabProjectForCheckout,
   type ProjectRef,
 } from "./forge.ts";
 
@@ -107,13 +107,12 @@ async function gitlabMergeRequests(
   );
 }
 
-/** The checkout's own pull or merge requests, for the worktree audit. */
-export async function listPullRequests(
+export async function listOwnPullRequests(
   cwd: string,
   options: { readonly glabTimeoutMs?: number } = {}
 ): Promise<readonly ListedPr[]> {
-  const forge = await forgeForCheckout(cwd, options);
-  if (forge.kind === "gitlab") return gitlabMergeRequests(forge.project);
+  const project = await gitlabProjectForCheckout(cwd, options);
+  if (project !== null) return gitlabMergeRequests(project);
   const result = await capture(GITHUB_LIST, LIST_TIMEOUT_MS, cwd);
   if (result.code !== 0) failed(result, "gh pr list");
   return JSON.parse(result.stdout) as readonly ListedPr[];
@@ -121,7 +120,7 @@ export async function listPullRequests(
 
 if (import.meta.main) {
   try {
-    const list = await listPullRequests(process.argv[2] ?? process.cwd());
+    const list = await listOwnPullRequests(process.argv[2] ?? process.cwd());
     process.stdout.write(`${JSON.stringify(list)}\n`);
   } catch (error) {
     console.error(

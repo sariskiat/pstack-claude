@@ -12,9 +12,6 @@
 //
 // Every probe yields a Fact, { known: true, value } or { known: false }. A hold
 // bucket needs only its own fact; `safe` needs every fact known.
-//
-// The PR column comes from forge/list-prs.ts, which asks the forge that the
-// checkout's origin names.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";

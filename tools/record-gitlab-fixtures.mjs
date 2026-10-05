@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
-// Records the glab api responses that the GitLab reader parses, keeps only the
-// fields it reads, and rewrites every host, project path, user, and link so the
-// output can be committed to a public repository.
+// Records the glab api responses that the GitLab reader parses. It keeps only
+// the fields the reader reads and replaces the host, the project path, every
+// user name, and every link. Titles, comments, and branch names pass through
+// unchanged, so read the output before you commit it to a public repository.
 //
 //   bun tools/record-gitlab-fixtures.mjs <host> <project-path> <out-dir> <name>=<iid>...
 //
-// Per name it writes mr-<name>.json, approvals-<name>.json,
-// reviewers-<name>.json, and discussions-<name>.json. When the merge request has
-// a head pipeline it adds jobs-<name>.json. glab must be logged in to <host>.
+// Per name it writes mr-<name>.json, approvals-<name>.json, reviewers-<name>.json,
+// and discussions-<name>.json, plus jobs-<name>.json when the merge request has a
+// head pipeline. glab must be logged in to <host>.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

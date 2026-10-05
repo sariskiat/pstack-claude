@@ -34,7 +34,7 @@ import {
   parseApprovals,
   parseDiscussions,
   parseJob,
-  parseMergeRequest,
+  parseSettledMergeRequest,
   pullRequestFacts,
   rollupStateFor,
   type ApprovalSignal,
@@ -114,7 +114,7 @@ describe("detailed_merge_status to MergeStateStatus", () => {
   test.each(TABLE.filter(([, state]) => state !== "UNKNOWN"))(
     "%s is %s",
     (status, expected) => {
-      const mr = parseMergeRequest(withStatus("mr-green.json", status));
+      const mr = parseSettledMergeRequest(withStatus("mr-green.json", status));
       expect(pullRequestFacts(mr, none, context(1)).mergeStateStatus).toBe(
         expected
       );
@@ -125,10 +125,10 @@ describe("detailed_merge_status to MergeStateStatus", () => {
     "%s is UNKNOWN, so the reader refuses it and the poll retries",
     (status) => {
       expect(() =>
-        parseMergeRequest(withStatus("mr-green.json", status))
+        parseSettledMergeRequest(withStatus("mr-green.json", status))
       ).toThrow(/has not finished computing/);
       try {
-        parseMergeRequest(withStatus("mr-green.json", status));
+        parseSettledMergeRequest(withStatus("mr-green.json", status));
       } catch (error) {
         expect((error as WatcherQueryError).failure).toMatchObject({
           kind: "snapshot-changed",
@@ -145,10 +145,46 @@ describe("detailed_merge_status to MergeStateStatus", () => {
     expect(TABLE).toHaveLength(24);
   });
 
+  test("only mergeable reaches READY, and draft_status only under allow-draft", async () => {
+    const reachesReady = async (
+      status: DetailedMergeStatus,
+      allowDraft: boolean
+    ): Promise<boolean> => {
+      try {
+        const { decision } = await snapshot(
+          {
+            mr: {
+              ...fixture("mr-green.json"),
+              detailed_merge_status: status,
+              draft: status === "draft_status",
+            },
+            approvals: fixture("approvals-green.json"),
+            jobs: fixture("jobs-green.json"),
+          },
+          allowDraft
+        );
+        return decision.kind === "ready";
+      } catch (error) {
+        if (error instanceof WatcherQueryError) return false;
+        throw error;
+      }
+    };
+    const strict: string[] = [];
+    const lenient: string[] = [];
+    for (const [status] of TABLE) {
+      if (await reachesReady(status, false)) strict.push(status);
+      if (await reachesReady(status, true)) lenient.push(status);
+    }
+    expect(strict).toEqual(["mergeable"]);
+    expect(lenient.sort()).toEqual(["draft_status", "mergeable"]);
+  });
+
   test("an unlisted value fails closed instead of reaching READY", () => {
     const error = (() => {
       try {
-        parseMergeRequest(withStatus("mr-green.json", "brand_new_status"));
+        parseSettledMergeRequest(
+          withStatus("mr-green.json", "brand_new_status")
+        );
       } catch (caught) {
         return caught as WatcherQueryError;
       }
@@ -159,7 +195,7 @@ describe("detailed_merge_status to MergeStateStatus", () => {
   });
 
   test("has_conflicts makes the merge request CONFLICTING even when another status comes first", () => {
-    const mr = parseMergeRequest({
+    const mr = parseSettledMergeRequest({
       ...withStatus("mr-green.json", "ci_must_pass"),
       has_conflicts: true,
     });
@@ -170,7 +206,7 @@ describe("detailed_merge_status to MergeStateStatus", () => {
   });
 
   test("a draft is a draft whatever the status says", () => {
-    const mr = parseMergeRequest({
+    const mr = parseSettledMergeRequest({
       ...withStatus("mr-green.json", "ci_must_pass"),
       draft: true,
     });
@@ -180,20 +216,20 @@ describe("detailed_merge_status to MergeStateStatus", () => {
   test("opened, closed, and merged map to OPEN, CLOSED, and MERGED", () => {
     expect(
       pullRequestFacts(
-        parseMergeRequest(fixture("mr-green.json")),
+        parseSettledMergeRequest(fixture("mr-green.json")),
         none,
         context(1)
       ).state
     ).toBe("OPEN");
     expect(
       pullRequestFacts(
-        parseMergeRequest(fixture("mr-closed.json")),
+        parseSettledMergeRequest(fixture("mr-closed.json")),
         none,
         context(10)
       ).state
     ).toBe("CLOSED");
     const merged = pullRequestFacts(
-      parseMergeRequest(fixture("mr-merged.json")),
+      parseSettledMergeRequest(fixture("mr-merged.json")),
       none,
       context(8)
     );
@@ -203,13 +239,13 @@ describe("detailed_merge_status to MergeStateStatus", () => {
 
   test("a locked merge request is a retryable error", () => {
     expect(() =>
-      parseMergeRequest({ ...fixture("mr-green.json"), state: "locked" })
+      parseSettledMergeRequest({ ...fixture("mr-green.json"), state: "locked" })
     ).toThrow(/locked/);
   });
 
   test("the head, base, and branch fields come from the merge request", () => {
     const facts = pullRequestFacts(
-      parseMergeRequest(fixture("mr-green.json")),
+      parseSettledMergeRequest(fixture("mr-green.json")),
       none,
       context(1)
     );
@@ -223,15 +259,15 @@ describe("detailed_merge_status to MergeStateStatus", () => {
   });
 
   test("a diff that is not built, or built for an older commit, is a retryable error", () => {
-    expect(() => parseMergeRequest(fixture("mr-preparing.json"))).toThrow(
-      /preparing/
-    );
     expect(() =>
-      parseMergeRequest({ ...fixture("mr-green.json"), diff_refs: null })
+      parseSettledMergeRequest(fixture("mr-preparing.json"))
+    ).toThrow(/preparing/);
+    expect(() =>
+      parseSettledMergeRequest({ ...fixture("mr-green.json"), diff_refs: null })
     ).toThrow(/diff/);
     const raw = fixture("mr-green.json");
     expect(() =>
-      parseMergeRequest({
+      parseSettledMergeRequest({
         ...raw,
         diff_refs: { ...raw.diff_refs, head_sha: "a".repeat(40) },
       })
@@ -240,7 +276,10 @@ describe("detailed_merge_status to MergeStateStatus", () => {
 
   test("a commit id that is not hex never reaches the facts", () => {
     expect(() =>
-      parseMergeRequest({ ...fixture("mr-green.json"), sha: "--upload-pack=x" })
+      parseSettledMergeRequest({
+        ...fixture("mr-green.json"),
+        sha: "--upload-pack=x",
+      })
     ).toThrow(/commit id/);
   });
 });
@@ -248,7 +287,7 @@ describe("detailed_merge_status to MergeStateStatus", () => {
 describe("approvals to ReviewDecision", () => {
   const decision = (status: DetailedMergeStatus, approvals: Approvals) =>
     pullRequestFacts(
-      parseMergeRequest(withStatus("mr-green.json", status)),
+      parseSettledMergeRequest(withStatus("mr-green.json", status)),
       approvals,
       context(1)
     ).reviewDecision;
@@ -266,6 +305,20 @@ describe("approvals to ReviewDecision", () => {
         parseApprovals(fixture("approvals-approved.json"), [])
       )
     ).toBe("APPROVED");
+  });
+
+  test("an Enterprise server with no approval rule says approved while nobody approved, which is no decision", () => {
+    const empty = parseApprovals(
+      {
+        approved: true,
+        approvals_required: 0,
+        approvals_left: 0,
+        approved_by: [],
+      },
+      []
+    );
+    expect(empty.approved).toBe(false);
+    expect(decision("mergeable", empty)).toBeNull();
   });
 
   test("approvals still missing are REVIEW_REQUIRED (documented Enterprise shape, not recorded)", () => {

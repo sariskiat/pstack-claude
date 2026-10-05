@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ForgeError } from "./forge.ts";
-import { listPullRequests, type ListedPr } from "./list-prs.ts";
+import { listOwnPullRequests, type ListedPr } from "./list-prs.ts";
 
 const HOST = "gitlab.example.com";
 const SHA = "a".repeat(40);
@@ -115,7 +115,7 @@ describe("a GitHub checkout lists through gh exactly as the worktree audit did",
   test("runs gh pr list with the audit's arguments in the checkout and returns its list", async () => {
     await withFakes({ gh: ghScript }, async (fakes) => {
       const dir = fakes.checkout("https://github.com/o/r.git");
-      expect(await listPullRequests(dir)).toEqual(GH_JSON);
+      expect(await listOwnPullRequests(dir)).toEqual(GH_JSON);
       const [call] = fakes.calls();
       expect(call.args).toEqual([
         "pr",
@@ -137,7 +137,7 @@ describe("a GitHub checkout lists through gh exactly as the worktree audit did",
 
   test("keeps gh for a checkout with no origin remote", async () => {
     await withFakes({ gh: ghScript }, async (fakes) => {
-      expect(await listPullRequests(fakes.checkout(null))).toEqual(GH_JSON);
+      expect(await listOwnPullRequests(fakes.checkout(null))).toEqual(GH_JSON);
     });
   });
 
@@ -149,7 +149,7 @@ describe("a GitHub checkout lists through gh exactly as the worktree audit did",
       async (fakes) => {
         expect(
           await messageOf(
-            listPullRequests(fakes.checkout("https://github.com/o/r"))
+            listOwnPullRequests(fakes.checkout("https://github.com/o/r"))
           )
         ).toBe("gh pr list failed: gh: not logged in");
       }
@@ -173,7 +173,7 @@ describe("a GitLab checkout lists its own merge requests through glab", () => {
         }),
       },
       async (fakes) => {
-        const listed = await listPullRequests(fakes.checkout(remote));
+        const listed = await listOwnPullRequests(fakes.checkout(remote));
         expect(listed).toEqual([
           {
             number: 3,
@@ -220,7 +220,7 @@ describe("a GitLab checkout lists its own merge requests through glab", () => {
     await withFakes(
       { glab: glabScript({ "1": full, "2": [mr(101, "merged")] }) },
       async (fakes) => {
-        const listed = await listPullRequests(fakes.checkout(remote));
+        const listed = await listOwnPullRequests(fakes.checkout(remote));
         expect(listed).toHaveLength(101);
         const pages = fakes
           .calls()
@@ -238,7 +238,7 @@ describe("a GitLab checkout lists its own merge requests through glab", () => {
     );
     await withFakes({ glab: glabScript(pages) }, async (fakes) => {
       expect(
-        await messageOf(listPullRequests(fakes.checkout(remote)))
+        await messageOf(listOwnPullRequests(fakes.checkout(remote)))
       ).toContain("partial list is refused");
     });
   });
@@ -251,7 +251,7 @@ if (args[0] === 'auth') { console.log('${HOST}'); process.exit(0); }
 console.error('glab: 401 Unauthorized (HTTP 401)'); process.exit(1);`,
       },
       async (fakes) => {
-        expect(await messageOf(listPullRequests(fakes.checkout(remote)))).toBe(
+        expect(await messageOf(listOwnPullRequests(fakes.checkout(remote)))).toBe(
           "glab api failed: glab: 401 Unauthorized (HTTP 401)"
         );
       }
@@ -260,7 +260,7 @@ console.error('glab: 401 Unauthorized (HTTP 401)'); process.exit(1);`,
       { glab: glabScript({ "1": [{ iid: "3", state: "opened" }] }) },
       async (fakes) => {
         expect(
-          await messageOf(listPullRequests(fakes.checkout(remote)))
+          await messageOf(listOwnPullRequests(fakes.checkout(remote)))
         ).toContain("not in the expected shape");
       }
     );
@@ -275,7 +275,7 @@ console.error('glab: 401 Unauthorized (HTTP 401)'); process.exit(1);`,
       },
       async (fakes) => {
         expect(
-          await messageOf(listPullRequests(fakes.checkout(remote)))
+          await messageOf(listOwnPullRequests(fakes.checkout(remote)))
         ).toContain("not in the expected shape");
       }
     );
@@ -283,7 +283,7 @@ console.error('glab: 401 Unauthorized (HTTP 401)'); process.exit(1);`,
 
   test("a host glab does not list fails with unknown-host, and a hung glab with glab-timeout", async () => {
     await withFakes({ glab: "console.log('gitlab.com');" }, async (fakes) => {
-      expect(await codeOf(listPullRequests(fakes.checkout(remote)))).toBe(
+      expect(await codeOf(listOwnPullRequests(fakes.checkout(remote)))).toBe(
         "unknown-host"
       );
     });
@@ -292,7 +292,7 @@ console.error('glab: 401 Unauthorized (HTTP 401)'); process.exit(1);`,
       async (fakes) => {
         expect(
           await codeOf(
-            listPullRequests(fakes.checkout(remote), { glabTimeoutMs: 300 })
+            listOwnPullRequests(fakes.checkout(remote), { glabTimeoutMs: 300 })
           )
         ).toBe("glab-timeout");
       }

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import {
   currentBranch,
   detectForgeEnv,
-  forgeForCheckout,
+  gitlabProjectForCheckout,
   ForgeError,
   GLAB_TIMEOUT_MS,
   ownerAndName,
@@ -550,7 +550,7 @@ describe("currentBranch", () => {
   });
 });
 
-describe("forgeForCheckout", () => {
+describe("gitlabProjectForCheckout", () => {
   const dirs: string[] = [];
   const checkout = async (remote: string | null): Promise<string> => {
     const dir = await mkdtemp(join(tmpdir(), "forge-checkout-"));
@@ -571,7 +571,7 @@ describe("forgeForCheckout", () => {
       () => false
     );
 
-  test("a github.com origin, no origin, and an unreadable origin keep gh and never run glab", async () => {
+  test("a github.com origin, no origin, and an unreadable origin are not a GitLab project and never run glab", async () => {
     await withFakeBins({ glab: GLAB_RAN }, async (bin) => {
       try {
         for (const remote of [
@@ -579,9 +579,9 @@ describe("forgeForCheckout", () => {
           null,
           "/srv/git/local.git",
         ])
-          expect(await forgeForCheckout(await checkout(remote))).toEqual({
-            kind: "github",
-          });
+          expect(
+            await gitlabProjectForCheckout(await checkout(remote))
+          ).toBeNull();
         expect(await ran(bin)).toBe(false);
       } finally {
         await cleanup();
@@ -589,17 +589,14 @@ describe("forgeForCheckout", () => {
     });
   });
 
-  test("a host that glab lists is a gitlab project with every group segment", async () => {
+  test("a host that glab lists gives its project with every group segment", async () => {
     await withFakeBins({ glab: "printf 'gitlab.example.com\\n'" }, async () => {
       try {
         expect(
-          await forgeForCheckout(
+          await gitlabProjectForCheckout(
             await checkout("git@gitlab.example.com:platform/tools/app.git")
           )
-        ).toEqual({
-          kind: "gitlab",
-          project: { host: "gitlab.example.com", path: "platform/tools/app" },
-        });
+        ).toEqual({ host: "gitlab.example.com", path: "platform/tools/app" });
       } finally {
         await cleanup();
       }
@@ -610,9 +607,9 @@ describe("forgeForCheckout", () => {
     const remote = "https://gitlab.example.com/g/p.git";
     await withFakeBins({ glab: "printf 'gitlab.com\\n'" }, async () => {
       try {
-        const error = await forgeForCheckout(await checkout(remote)).catch(
-          (e: unknown) => e
-        );
+        const error = await gitlabProjectForCheckout(
+          await checkout(remote)
+        ).catch((e: unknown) => e);
         expect((error as ForgeError).code).toBe("unknown-host");
       } finally {
         await cleanup();
@@ -620,7 +617,7 @@ describe("forgeForCheckout", () => {
     });
     await withFakeBins({ glab: "sleep 5" }, async () => {
       try {
-        const error = await forgeForCheckout(await checkout(remote), {
+        const error = await gitlabProjectForCheckout(await checkout(remote), {
           glabTimeoutMs: 300,
         }).catch((e: unknown) => e);
         expect((error as ForgeError).code).toBe("glab-timeout");
@@ -630,16 +627,18 @@ describe("forgeForCheckout", () => {
     });
   });
 
-  test("an origin CLI on PATH makes a non-GitHub host unsupported and leaves a GitHub host on gh", async () => {
+  test("an origin CLI on PATH makes a non-GitHub host unsupported and leaves a GitHub host alone", async () => {
     await withFakeBins({ origin: "exit 0", glab: GLAB_RAN }, async (bin) => {
       try {
-        const error = await forgeForCheckout(
+        const error = await gitlabProjectForCheckout(
           await checkout("https://gitlab.example.com/g/p.git")
         ).catch((e: unknown) => e);
         expect((error as ForgeError).code).toBe("unsupported-forge");
         expect(
-          await forgeForCheckout(await checkout("https://github.com/o/r"))
-        ).toEqual({ kind: "github" });
+          await gitlabProjectForCheckout(
+            await checkout("https://github.com/o/r")
+          )
+        ).toBeNull();
         expect(await ran(bin)).toBe(false);
       } finally {
         await cleanup();

@@ -50,6 +50,16 @@ export class ChecksUnavailable extends WatcherQueryError {
 }
 const firstLine = (value: string): string =>
   value.trim().split(/\r?\n/, 1)[0]?.slice(0, 240) ?? "";
+export const commandExit = (
+  result: CommandResult,
+  command: string
+): WatcherQueryError =>
+  new WatcherQueryError({
+    kind: "command-exit",
+    retryable: true,
+    code: result.code,
+    detail: firstLine(result.stderr) || `${command} exited ${result.code}`,
+  });
 export function run(
   argv: readonly [string, ...string[]],
   deadline: WatchDeadline
@@ -112,14 +122,7 @@ export async function runJson(
   deadline: WatchDeadline
 ): Promise<unknown> {
   const result = await run(argv, deadline);
-  if (result.code !== 0)
-    throw new WatcherQueryError({
-      kind: "command-exit",
-      retryable: true,
-      code: result.code,
-      detail:
-        firstLine(result.stderr) || `${argv.join(" ")} exited ${result.code}`,
-    });
+  if (result.code !== 0) throw commandExit(result, argv.join(" "));
   return parseJson(result.stdout, argv.join(" "));
 }
 function raw(value: unknown): string {

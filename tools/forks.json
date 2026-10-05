@@ -158,7 +158,7 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/github.ts": {
       "kind": "policy",
-      "why": "Reads review decision, merge state, and head and base revisions under the shared deadline, and refuses a checkout PR paired with a different explicit repository. Reads and builds every project reference as ProjectRef {host, path}, and splits owner and name only where GitHub GraphQL needs them. Exports run and the shared thread rule for the GitLab reader, and lets a reader name its check source.",
+      "why": "Reads review decision, merge state, and head and base revisions under the shared deadline, and refuses a checkout PR paired with a different explicit repository. Reads and builds every project reference as ProjectRef {host, path}, and splits owner and name only where GitHub GraphQL needs them. Exports run, the command-exit error, and the shared thread rule for the GitLab reader, and lets a reader name its check source.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },

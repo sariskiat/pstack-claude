@@ -246,7 +246,6 @@ export async function originRemoteUrl(cwd: string): Promise<string> {
   return url;
 }
 
-/** The checked-out branch, or null on a detached HEAD or when git cannot say. */
 export async function currentBranch(cwd: string): Promise<string | null> {
   const result = await capture([
     "git",
@@ -261,15 +260,10 @@ export async function currentBranch(cwd: string): Promise<string | null> {
   return result.code === 0 && branch !== "" ? branch : null;
 }
 
-export type CheckoutForge =
-  | { readonly kind: "github" }
-  | { readonly kind: "gitlab"; readonly project: ProjectRef };
-
-/** A github.com origin, an unreadable origin, or no origin keep `gh`, so GitHub runs make the calls they always made. Any other host must be a GitLab host that glab lists. */
-export async function forgeForCheckout(
+export async function gitlabProjectForCheckout(
   cwd: string,
   options: { readonly glabTimeoutMs?: number } = {}
-): Promise<CheckoutForge> {
+): Promise<ProjectRef | null> {
   let remote: string;
   let host: string;
   try {
@@ -280,13 +274,12 @@ export async function forgeForCheckout(
       error instanceof ForgeError &&
       (error.code === "no-origin-remote" || error.code === "unparseable-remote")
     )
-      return { kind: "github" };
+      return null;
     throw error;
   }
-  if (host === GITHUB_HOST) return { kind: "github" };
+  if (host === GITHUB_HOST) return null;
   const forge = resolveForge(remote, await detectForgeEnv(host, options));
-  if (forge.kind === "gitlab")
-    return { kind: "gitlab", project: forge.project };
+  if (forge.kind === "gitlab") return forge.project;
   throw new ForgeError(
     "unsupported-forge",
     `${forge.project.host} resolves to the ${forge.kind} forge, which this tool does not read`

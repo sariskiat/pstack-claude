@@ -6,7 +6,7 @@ import {
   InvalidArgumentError,
   Option,
 } from "commander";
-import { ForgeError, forgeForCheckout } from "../forge/forge.ts";
+import { ForgeError, gitlabProjectForCheckout } from "../forge/forge.ts";
 import {
   GhGitHubReader,
   WatcherQueryError,
@@ -167,7 +167,6 @@ export interface CliRuntime {
 }
 const isLookup = (reader: CliRuntime["reader"]): reader is ForgeLookup =>
   "checkout" in reader;
-/** `--owner` with `--repo` keeps the GitHub reader without looking at the checkout. */
 export async function selectReader(
   options: Pick<CliOptions, "owner" | "repo">,
   deadline: WatchDeadline,
@@ -175,12 +174,12 @@ export async function selectReader(
 ): Promise<T.ForgeReader> {
   if (options.owner !== null && options.repo !== null)
     return new GhGitHubReader(deadline);
-  const forge = await forgeForCheckout(lookup.checkout, {
+  const project = await gitlabProjectForCheckout(lookup.checkout, {
     glabTimeoutMs: lookup.glabTimeoutMs,
   });
-  return forge.kind === "gitlab"
-    ? new GlabReader(forge.project, deadline, { cwd: lookup.checkout })
-    : new GhGitHubReader(deadline);
+  return project === null
+    ? new GhGitHubReader(deadline)
+    : new GlabReader(project, deadline, { cwd: lookup.checkout });
 }
 function seedContext(
   reader: T.ForgeReader,

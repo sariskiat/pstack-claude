@@ -7,6 +7,7 @@ import {
 import type { WatchDeadline } from "./deadline.ts";
 import {
   WatcherQueryError,
+  commandExit,
   parsePullRequest,
   run,
   unresolvedThreads,
@@ -23,7 +24,6 @@ import {
 import type * as T from "./types.ts";
 import { nonEmpty, parsePrNumber } from "./types.ts";
 
-/** One row per `detailed_merge_status` value in GitLab 18.11. Only `mergeable` may reach READY. */
 export const MERGE_STATE_BY_STATUS = {
   mergeable: "CLEAN",
   conflict: "DIRTY",
@@ -218,8 +218,7 @@ function parseHeadPipeline(value: unknown): HeadPipeline | null {
   };
 }
 
-/** Throws a retryable error for any state in which GitLab is still computing the merge request. */
-export function parseMergeRequest(value: unknown): MergeRequest {
+export function parseSettledMergeRequest(value: unknown): MergeRequest {
   const mr = object(value, "merge request");
   const state = oneOf(
     mr.state,
@@ -279,9 +278,10 @@ export function parseApprovals(value: unknown, reviewers: unknown): Approvals {
   const left = optionalInteger(approvals.approvals_left, "approvals_left");
   return {
     approved:
-      typeof approvals.approved === "boolean"
+      approvedBy.length > 0 &&
+      (typeof approvals.approved === "boolean"
         ? approvals.approved
-        : approvedBy.length > 0 && (left ?? 0) === 0,
+        : (left ?? 0) === 0),
     approvalsLeft: left,
     changesRequested: list(reviewers, "reviewers").some(
       (reviewer) => object(reviewer, "reviewer").state === "requested_changes"
@@ -498,7 +498,6 @@ function unavailable(code: string, detail: string): WatcherQueryError {
   });
 }
 
-/** 401, 403, and 404 do not heal on retry. Everything else keeps the retry path of `runJson`. */
 function glabFailure(
   result: CommandResult,
   host: string,
@@ -520,14 +519,10 @@ function glabFailure(
       "not-found",
       `GitLab on ${host} returned 404 for ${endpoint.split("?")[0]}. The project or merge request does not exist, or the token cannot see it.`
     );
-  return new WatcherQueryError({
-    kind: "command-exit",
-    retryable: true,
-    code: result.code,
-    detail:
-      result.stderr.trim().split(/\r?\n/, 1)[0]?.slice(0, 240) ||
-      `glab api exited ${result.code}`,
-  });
+  return commandExit(
+    result,
+    ["glab", "api", "--hostname", host, endpoint].join(" ")
+  );
 }
 
 export interface GlabReaderOptions {
@@ -616,7 +611,7 @@ export class GlabReader implements T.ForgeReader {
   }
 
   private async fetchMergeRequest(context: T.PrContext): Promise<MergeRequest> {
-    return parseMergeRequest(await this.api(this.mrUrl(context)));
+    return parseSettledMergeRequest(await this.api(this.mrUrl(context)));
   }
 
   private async lastRead(context: T.PrContext): Promise<MergeRequest> {
@@ -639,7 +634,7 @@ export class GlabReader implements T.ForgeReader {
         retryable: false,
         rawValue: "HEAD",
         detail:
-          "the checkout is on a detached HEAD, so there is no branch to find a merge request for; pass --pr",
+          "the checkout has no branch checked out (a detached HEAD, or git could not read it), so there is no branch to find a merge request for; pass --pr",
       });
     const found = list(
       await this.api(
@@ -668,7 +663,7 @@ export class GlabReader implements T.ForgeReader {
     const approvalsEndpoint = this.mrUrl(context, "/approvals");
     const reviewersEndpoint = this.mrUrl(context, "/reviewers");
     const [mr, approvals] = await Promise.all([
-      this.api(mrEndpoint).then(parseMergeRequest),
+      this.api(mrEndpoint).then(parseSettledMergeRequest),
       Promise.all([
         this.api(approvalsEndpoint),
         this.api(reviewersEndpoint),
