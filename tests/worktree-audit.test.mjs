@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -305,6 +305,21 @@ test("the CLI exits 1 outside a git repo", () => {
   const result = spawnSync("node", [script, outside, outside], { encoding: "utf8" });
   expect(result.status).toBe(1);
   expect(result.stderr).toBe("not in a git repo; pass a repo path\n");
+});
+
+test("under node without bun on PATH the audit still prints and warns that bun is missing", () => {
+  const fixture = createFixture();
+  const bin = join(fixture.root, "node-only-bin");
+  mkdirSync(bin);
+  symlinkSync(spawnSync("sh", ["-c", "command -v node"], { encoding: "utf8" }).stdout.trim(), join(bin, "node"));
+  const result = spawnSync("node", [script, fixture.repo, fixture.transcripts], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` },
+  });
+  expect(result.status).toBe(0);
+  expect(result.stderr).toContain(
+    "warn: listing pull requests failed; PR column will be empty: bun is not on PATH, and the PR column needs it to run forge/list-prs.ts",
+  );
 });
 
 describe("a merge request from GitLab", () => {

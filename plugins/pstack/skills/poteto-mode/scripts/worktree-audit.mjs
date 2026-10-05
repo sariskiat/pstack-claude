@@ -6,6 +6,9 @@
 //
 //   node worktree-audit.mjs [repo-path] [transcripts-path ...]
 //
+// The PR column runs forge/list-prs.ts, a TypeScript file, so bun must be on
+// PATH even when node runs this script.
+//
 // Without a transcripts path it scans every runtime's transcripts directory
 // that exists: Claude Code's ~/.claude/projects, and Pi's sessions and pstack
 // subagent sessions under $PI_CODING_AGENT_DIR (default ~/.pi/agent).
@@ -61,6 +64,8 @@ export function runListPrs(repo, warn = () => {}) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
+  if (result.error?.code === "ENOENT")
+    throw new Error("bun is not on PATH, and the PR column needs it to run forge/list-prs.ts; install bun from https://bun.sh");
   if (result.error) throw result.error;
   if (result.status !== 0)
     throw Object.assign(new Error(result.stderr.trim() || `list-prs exited ${result.status}`), { stderr: result.stderr });
