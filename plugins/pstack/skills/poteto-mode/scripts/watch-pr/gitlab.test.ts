@@ -1020,33 +1020,21 @@ const SCENARIOS: readonly {
     },
   },
   {
-    name: "a merge request with no commits is CONFLICTING, because GitLab reports it as cannot_be_merged",
+    name: "a merge request with no commits blocks at the merge gate with commits_status, though GitLab also reports has_conflicts (recorded)",
     served: {
       mr: fixture("mr-no-commits.json"),
       approvals: fixture("approvals-green.json"),
       jobs: fixture("jobs-green.json"),
     },
     expect: ({ decision }) => {
+      expect(fixture("mr-no-commits.json").has_conflicts).toBe(true);
       expect(decision).toMatchObject({
         kind: "blocker",
         blocker: {
-          kind: "merge-conflicts",
-          facts: { mergeable: "CONFLICTING", mergeStateStatus: "BLOCKED" },
+          kind: "merge-gate",
+          reason: "merge-blocked",
+          detailedMergeStatus: "commits_status",
         },
-      });
-    },
-  },
-  {
-    name: "commits_status alone blocks at the merge gate (has_conflicts patched to false, not recorded)",
-    served: {
-      mr: { ...fixture("mr-no-commits.json"), has_conflicts: false },
-      approvals: fixture("approvals-green.json"),
-      jobs: fixture("jobs-green.json"),
-    },
-    expect: ({ decision }) => {
-      expect(decision).toMatchObject({
-        kind: "blocker",
-        blocker: { kind: "merge-gate", reason: "merge-blocked" },
       });
     },
   },

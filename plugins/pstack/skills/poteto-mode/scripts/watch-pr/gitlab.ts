@@ -316,7 +316,8 @@ export function pullRequestFacts(
     {
       mergeable: !open
         ? "UNKNOWN"
-        : mr.hasConflicts || mr.status === "conflict"
+        : mr.status === "conflict" ||
+            (mr.hasConflicts && mr.status !== "commits_status")
           ? "CONFLICTING"
           : "MERGEABLE",
       mergeStateStatus: open ? MERGE_STATE_BY_STATUS[mr.status] : "UNKNOWN",
