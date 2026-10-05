@@ -1,4 +1,6 @@
+import type { ProjectRef } from "../forge/forge.ts";
 import type { LandingRevision } from "./landing.ts";
+export type { ProjectRef };
 declare const prNumberBrand: unique symbol;
 export type PrNumber = number & { readonly [prNumberBrand]: "PrNumber" };
 export type NonEmpty<T> = readonly [T, ...T[]];
@@ -10,11 +12,7 @@ export function parsePrNumber(value: unknown, label = "PR number"): PrNumber {
     throw new Error(`${label} must be a positive integer`);
   return value as PrNumber;
 }
-export interface Repository {
-  readonly owner: string;
-  readonly repo: string;
-}
-export interface PrContext extends Repository {
+export interface PrContext extends ProjectRef {
   readonly number: PrNumber;
 }
 export type MergeStateStatus =
@@ -60,7 +58,7 @@ export type PullRequestFacts = PullRequestFields &
   );
 export interface OpenPullRequest {
   readonly number: PrNumber;
-  readonly headRepository: Repository | null;
+  readonly headRepository: ProjectRef | null;
   readonly headRefName: string;
   readonly baseRefName: string;
 }
@@ -424,11 +422,11 @@ export type RollupPage =
     }
   | { readonly kind: "no-rollup" };
 export interface GitHubReader {
-  originRepo(): Promise<Repository | null>;
+  originRepo(): Promise<ProjectRef | null>;
   currentPr(pr: PrNumber | null): Promise<PrContext>;
   pullRequest(context: PrContext): Promise<PullRequestFacts>;
   revision(context: PrContext): Promise<LandingRevision>;
-  openPullRequests(repository: Repository): Promise<readonly OpenPullRequest[]>;
+  openPullRequests(repository: ProjectRef): Promise<readonly OpenPullRequest[]>;
   checksFastPath(context: PrContext): Promise<ChecksFastPath>;
   checkRollupPage(
     context: PrContext,

@@ -107,8 +107,8 @@ describe("parseArgs", () => {
 
 describe("rendering", () => {
   const context = {
-    owner: "owner",
-    repo: "repo",
+    host: "github.com",
+    path: "owner/repo",
     number: parsePrNumber(1),
   };
   const status = {
@@ -144,7 +144,11 @@ describe("rendering", () => {
   it("emits compact valid JSON by default", () => {
     const rendered = renderJson(status);
     expect(rendered.endsWith("\n")).toBe(true);
-    expect(JSON.parse(rendered)).toEqual(status);
+    const wire = { owner: "owner", repo: "repo", number: 1 };
+    const parsed = JSON.parse(rendered);
+    expect(parsed.rows[0].context).toEqual(wire);
+    expect(parsed.rows[0].facts.context).toEqual(wire);
+    expect(rendered).not.toContain('"host"');
   });
 
   it("renders the Markdown table from the same verdict only", () => {

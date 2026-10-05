@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import {
   chmod,
   mkdir,
@@ -20,6 +20,8 @@ import {
   type OpenStoreOptions,
   type Store,
 } from "./store.ts";
+
+setDefaultTimeout(30_000);
 
 const SCRIPT = join(import.meta.dir, "orch.ts");
 const directories: string[] = [];

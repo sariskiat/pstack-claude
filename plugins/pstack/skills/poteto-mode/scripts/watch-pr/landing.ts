@@ -1,4 +1,10 @@
 import { WatcherQueryError } from "./github.ts";
+import {
+  GITHUB_HOST,
+  isHostname,
+  isPathSegment,
+  isProjectPath,
+} from "../forge/forge.ts";
 import { parsePrNumber, type PrContext } from "./types.ts";
 
 export interface LandingRevision {
@@ -41,14 +47,54 @@ export function flag(value: unknown, label: string): boolean {
   return value;
 }
 
+function projectRef(host: string, path: string): void {
+  if (!isHostname(host) || !isProjectPath(path))
+    invalid("host and path must be a hostname and group/project name segments");
+}
+
 export function parseContext(value: unknown): PrContext {
   const fields = object(value, "PR context");
+  if (fields.host !== undefined) {
+    const host = text(fields.host, "host");
+    const path = text(fields.path, "path");
+    projectRef(host, path);
+    return { host, path, number: parsePrNumber(fields.number) };
+  }
   const owner = text(fields.owner, "owner");
   const repo = text(fields.repo, "repo");
-  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo))
+  if (!isPathSegment(owner) || !isPathSegment(repo))
     invalid("owner and repo must be individual repository names");
-  return { owner, repo, number: parsePrNumber(fields.number) };
+  return {
+    host: GITHUB_HOST,
+    path: `${owner}/${repo}`,
+    number: parsePrNumber(fields.number),
+  };
 }
+
+function isPrContext(value: unknown): value is PrContext {
+  if (typeof value !== "object" || value === null) return false;
+  const fields = value as Record<string, unknown>;
+  return (
+    typeof fields.host === "string" &&
+    typeof fields.path === "string" &&
+    typeof fields.number === "number"
+  );
+}
+
+export type WireContext =
+  | { readonly owner: string; readonly repo: string; readonly number: number }
+  | { readonly host: string; readonly path: string; readonly number: number };
+
+export function contextToWire(context: PrContext): WireContext {
+  const [owner, repo, ...rest] = context.path.split("/");
+  return context.host === GITHUB_HOST && repo !== undefined && rest.length === 0
+    ? { owner, repo, number: context.number }
+    : { host: context.host, path: context.path, number: context.number };
+}
+
+/** JSON.stringify replacer that writes every PrContext in its wire shape. */
+export const wireReplacer = (_key: string, value: unknown): unknown =>
+  isPrContext(value) ? contextToWire(value) : value;
 
 export function parseLandingRevision(
   value: unknown,
@@ -73,8 +119,8 @@ export function sameLandingRevision(
   b: LandingRevision
 ): boolean {
   return (
-    a.context.owner.toLowerCase() === b.context.owner.toLowerCase() &&
-    a.context.repo.toLowerCase() === b.context.repo.toLowerCase() &&
+    a.context.host.toLowerCase() === b.context.host.toLowerCase() &&
+    a.context.path.toLowerCase() === b.context.path.toLowerCase() &&
     a.context.number === b.context.number &&
     a.headRefOid === b.headRefOid &&
     a.baseRefName === b.baseRefName &&

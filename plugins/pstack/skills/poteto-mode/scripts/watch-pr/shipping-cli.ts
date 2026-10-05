@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { Command, CommanderError } from "commander";
 import { WatchDeadline } from "./deadline.ts";
 import { runJson } from "./github.ts";
-import { object, parseContext } from "./landing.ts";
+import { object, parseContext, wireReplacer } from "./landing.ts";
 import {
   GhShippingService,
   cancelPending,
@@ -60,6 +60,6 @@ export async function main(argv: readonly string[]): Promise<number> {
       detail: error instanceof Error ? error.message : String(error),
     };
   }
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.stdout.write(`${JSON.stringify(result, wireReplacer)}\n`);
   return result.kind === "inspected" || result.kind === "cancelled" ? 0 : 1;
 }

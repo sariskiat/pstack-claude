@@ -1,6 +1,7 @@
+import { wireReplacer } from "./landing.ts";
 import type * as T from "./types.ts";
 export const renderJson = (verdict: T.WatcherVerdict): string =>
-  `${JSON.stringify(verdict)}\n`;
+  `${JSON.stringify(verdict, wireReplacer)}\n`;
 function ciCell(row: T.PrSnapshot): string {
   if (row.kind !== "open") return "\u2014";
   const was = row.ci.hadPreviousPassingCi ? ", was ✅" : "";
@@ -51,7 +52,7 @@ function mergeCell(row: T.PrSnapshot): string {
 export function renderStatusTable(rows: T.NonEmpty<T.PrSnapshot>): string {
   const lines = ["| PR | CI | Review | Merge |", "| --- | --- | --- | --- |"];
   for (const row of rows) {
-    const url = `https://github.com/${row.context.owner}/${row.context.repo}/pull/${row.context.number}`;
+    const url = `https://${row.context.host}/${row.context.path}/pull/${row.context.number}`;
     lines.push(
       `| [#${row.context.number}](${url}) | ${ciCell(row)} | ${reviewCell(row)} | ${mergeCell(row)} |`
     );

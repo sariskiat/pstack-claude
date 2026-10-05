@@ -21,8 +21,8 @@ import type { CheckRead, ReportedChecks } from "./types.ts";
 import { parsePrNumber } from "./types.ts";
 
 const context = {
-  owner: "owner",
-  repo: "repo",
+  host: "github.com",
+  path: "owner/repo",
   number: parsePrNumber(42),
 };
 
@@ -357,12 +357,18 @@ describe("context and stack discovery", () => {
         repo: "repo",
         pr: context.number,
       })
-    ).toEqual({ owner: "explicit", repo: "repo", number: context.number });
+    ).toEqual({
+      host: "github.com",
+      path: "explicit/repo",
+      number: context.number,
+    });
     expect(reader.calls).toEqual([]);
   });
 
   it("uses the local origin before currentPr for an explicit number", async () => {
-    const reader = fakeReader({ origin: { owner: "local", repo: "checkout" } });
+    const reader = fakeReader({
+      origin: { host: "github.com", path: "local/checkout" },
+    });
     expect(
       await resolveContext({
         reader,
@@ -370,13 +376,21 @@ describe("context and stack discovery", () => {
         repo: null,
         pr: context.number,
       })
-    ).toEqual({ owner: "local", repo: "checkout", number: context.number });
+    ).toEqual({
+      host: "github.com",
+      path: "local/checkout",
+      number: context.number,
+    });
     expect(reader.calls).toEqual(["originRepo"]);
   });
 
   it("refuses to pair the checkout's PR number with a different explicit repository", async () => {
     const reader = fakeReader({
-      current: { owner: "acme", repo: "web", number: parsePrNumber(57) },
+      current: {
+        host: "github.com",
+        path: "acme/web",
+        number: parsePrNumber(57),
+      },
     });
     const resolved = resolveContext({
       reader,
@@ -392,30 +406,38 @@ describe("context and stack discovery", () => {
 
   it("accepts an explicit repository that matches the checkout's PR", async () => {
     const reader = fakeReader({
-      current: { owner: "acme", repo: "web", number: parsePrNumber(57) },
+      current: {
+        host: "github.com",
+        path: "acme/web",
+        number: parsePrNumber(57),
+      },
     });
     expect(
       await resolveContext({ reader, owner: "ACME", repo: "Web", pr: null })
-    ).toEqual({ owner: "ACME", repo: "Web", number: parsePrNumber(57) });
+    ).toEqual({
+      host: "github.com",
+      path: "ACME/Web",
+      number: parsePrNumber(57),
+    });
   });
 
   it("orders the connected stack bottom-to-top", () => {
     const ordered = orderStack(context, [
       {
         number: parsePrNumber(41),
-        headRepository: { owner: "owner", repo: "repo" },
+        headRepository: { host: "github.com", path: "owner/repo" },
         headRefName: "base-feature",
         baseRefName: "main",
       },
       {
         number: context.number,
-        headRepository: { owner: "owner", repo: "repo" },
+        headRepository: { host: "github.com", path: "owner/repo" },
         headRefName: "feature",
         baseRefName: "base-feature",
       },
       {
         number: parsePrNumber(43),
-        headRepository: { owner: "owner", repo: "repo" },
+        headRepository: { host: "github.com", path: "owner/repo" },
         headRefName: "upstack",
         baseRefName: "feature",
       },
@@ -427,7 +449,7 @@ describe("context and stack discovery", () => {
     const openPrs = (count: number) =>
       Array.from({ length: count }, (_, index) => ({
         number: parsePrNumber(index + 1),
-        headRepository: { owner: "owner", repo: "repo" },
+        headRepository: { host: "github.com", path: "owner/repo" },
         headRefName: `branch-${index + 1}`,
         baseRefName: "main",
       }));

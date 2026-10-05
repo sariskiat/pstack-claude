@@ -6,7 +6,7 @@ import type {
   OpenPullRequest,
   PrContext,
   PullRequestFacts,
-  Repository,
+  ProjectRef,
   ReviewThread,
   RollupPage,
 } from "./types.ts";
@@ -20,7 +20,7 @@ export interface FakeReaderOptions {
   readonly threads?: readonly ReviewThread[];
   readonly commitRollups?: readonly CommitRollup[];
   readonly openPullRequests?: readonly OpenPullRequest[];
-  readonly origin?: Repository | null;
+  readonly origin?: ProjectRef | null;
   readonly current?: PrContext;
 }
 
@@ -62,8 +62,8 @@ export function fakeReader(
 ): GitHubReader & { readonly calls: readonly string[] } {
   const calls: string[] = [];
   const context = options.current ?? {
-    owner: "owner",
-    repo: "repo",
+    host: "github.com",
+    path: "owner/repo",
     number: parsePrNumber(1),
   };
   const defaults: PullRequestFacts = {
@@ -85,7 +85,7 @@ export function fakeReader(
     async originRepo() {
       calls.push("originRepo");
       return options.origin === undefined
-        ? { owner: "owner", repo: "repo" }
+        ? { host: "github.com", path: "owner/repo" }
         : options.origin;
     },
     async currentPr(pr) {
