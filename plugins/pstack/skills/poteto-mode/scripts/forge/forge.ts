@@ -6,7 +6,6 @@ export interface ProjectRef {
   readonly path: string;
 }
 
-/** Facts about the machine that decide the forge. Read once at the boundary. */
 export interface ForgeEnv {
   readonly gitlabHosts: readonly string[];
   readonly originOnPath: boolean;
@@ -85,7 +84,6 @@ export function resolveForge(remoteUrl: string, env: ForgeEnv): ResolvedForge {
   );
 }
 
-/** GitHub names a repository by exactly two segments. Other forges may nest groups. */
 export function ownerAndName(project: ProjectRef): {
   readonly owner: string;
   readonly name: string;
@@ -160,7 +158,6 @@ export async function originRemoteUrl(cwd: string): Promise<string> {
   return url;
 }
 
-/** Resolves the forge for the checkout at `cwd` from its origin remote. */
 export async function resolveCheckoutForge(
   cwd: string
 ): Promise<ResolvedForge> {

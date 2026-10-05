@@ -42,8 +42,6 @@ export function flag(value: unknown, label: string): boolean {
   return value;
 }
 
-// The JSON wire shape of a GitHub context stays {owner, repo, number}. Saved
-// landing records and verdict consumers read it. Other hosts use {host, path}.
 export function parseContext(value: unknown): PrContext {
   const fields = object(value, "PR context");
   if (fields.host !== undefined)
@@ -73,7 +71,11 @@ function isPrContext(value: unknown): value is PrContext {
   );
 }
 
-export function contextToWire(context: PrContext): Record<string, unknown> {
+export type WireContext =
+  | { readonly owner: string; readonly repo: string; readonly number: number }
+  | { readonly host: string; readonly path: string; readonly number: number };
+
+export function contextToWire(context: PrContext): WireContext {
   const [owner, repo, ...rest] = context.path.split("/");
   return context.host === GITHUB_HOST && repo !== undefined && rest.length === 0
     ? { owner, repo, number: context.number }
