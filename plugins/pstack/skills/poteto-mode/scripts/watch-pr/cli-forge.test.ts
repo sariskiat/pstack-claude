@@ -5,12 +5,12 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ForgeError } from "../forge/forge.ts";
 import { type CliRuntime, main, selectReader } from "./cli.ts";
 import { renderPretty } from "./render.ts";
 import { WatchDeadline } from "./deadline.ts";
@@ -66,36 +66,47 @@ async function inSandbox(
   }
 }
 
+/** The gh reader runs git and gh in the process directory, which is the checkout outside tests. */
+async function mainIn(
+  dir: string,
+  argv: readonly string[],
+  runtime: CliRuntime
+): Promise<number> {
+  const saved = process.cwd();
+  process.chdir(dir);
+  try {
+    return await main(argv, runtime);
+  } finally {
+    process.chdir(saved);
+  }
+}
+
 const MARKER = 'touch "$(dirname "$0")/../glab-ran"';
 const glabRan = (sandbox: Sandbox) =>
   existsSync(join(sandbox.root, "glab-ran"));
 const none = { owner: null, repo: null };
 
-async function failureOf(promise: Promise<unknown>): Promise<ForgeError> {
-  try {
-    await promise;
-  } catch (error) {
-    if (error instanceof ForgeError) return error;
-    throw error;
-  }
-  throw new Error("expected a ForgeError");
-}
+const NO_GITHUB_REMOTE =
+  "none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`";
+const GH_FINDS_NO_REMOTE = `echo '${NO_GITHUB_REMOTE}' >&2; exit 1`;
 
 describe("selectReader keeps the gh reader for everything GitHub did before", () => {
   it("uses gh for explicit --owner and --repo without touching git or glab", async () => {
     await inSandbox({ glab: "exit 9" }, async (sandbox) => {
-      const reader = await selectReader({ owner: "o", repo: "r" }, deadline(), {
+      const choice = await selectReader({ owner: "o", repo: "r" }, deadline(), {
         checkout: join(sandbox.root, "not-a-checkout"),
       });
-      expect(reader).toBeInstanceOf(GhGitHubReader);
+      expect(choice.reader).toBeInstanceOf(GhGitHubReader);
+      expect(choice.ifGhFails).toBeNull();
     });
   });
 
   it("uses gh for a github.com origin and never runs glab", async () => {
-    await inSandbox({ glab: "exit 9" }, async (sandbox) => {
+    await inSandbox({ glab: MARKER }, async (sandbox) => {
       const dir = sandbox.checkout("git@github.com:o/r.git");
-      const reader = await selectReader(none, deadline(), { checkout: dir });
-      expect(reader).toBeInstanceOf(GhGitHubReader);
+      const choice = await selectReader(none, deadline(), { checkout: dir });
+      expect(choice.reader).toBeInstanceOf(GhGitHubReader);
+      expect(glabRan(sandbox)).toBe(false);
     });
   });
 
@@ -103,9 +114,11 @@ describe("selectReader keeps the gh reader for everything GitHub did before", ()
     await inSandbox({ glab: "exit 9" }, async (sandbox) => {
       for (const remote of [null, "/srv/git/local.git"])
         expect(
-          await selectReader(none, deadline(), {
-            checkout: sandbox.checkout(remote),
-          })
+          (
+            await selectReader(none, deadline(), {
+              checkout: sandbox.checkout(remote),
+            })
+          ).reader
         ).toBeInstanceOf(GhGitHubReader);
     });
   });
@@ -114,9 +127,28 @@ describe("selectReader keeps the gh reader for everything GitHub did before", ()
     await inSandbox({ origin: "exit 0" }, async (sandbox) => {
       const dir = sandbox.checkout("https://github.com/o/r");
       expect(
-        await selectReader(none, deadline(), { checkout: dir })
+        (await selectReader(none, deadline(), { checkout: dir })).reader
       ).toBeInstanceOf(GhGitHubReader);
     });
+  });
+
+  it("uses gh for a host glab does not list, keeping unknown-host, glab-timeout, or unsupported-forge for when gh fails too", async () => {
+    const cases = [
+      [{ glab: "printf 'gitlab.com\\n'" }, undefined, "unknown-host"],
+      [{ glab: "sleep 5" }, 300, "glab-timeout"],
+      [{ origin: "exit 0", glab: MARKER }, undefined, "unsupported-forge"],
+    ] as const;
+    for (const [bins, glabTimeoutMs, code] of cases)
+      await inSandbox(bins, async (sandbox) => {
+        const choice = await selectReader(none, deadline(), {
+          checkout: sandbox.checkout(REMOTE),
+          glabTimeoutMs,
+        });
+        expect(choice.reader).toBeInstanceOf(GhGitHubReader);
+        expect(choice.ifGhFails?.code).toBe(code);
+        expect(choice.ifGhFails?.message).toContain(HOST);
+        expect(glabRan(sandbox)).toBe(false);
+      });
   });
 });
 
@@ -124,7 +156,9 @@ describe("selectReader reads a GitLab checkout through glab", () => {
   it("builds a GlabReader for the project of an origin that glab lists", async () => {
     await inSandbox({ glab: `printf '${HOST}\\n  ok\\n'` }, async (sandbox) => {
       const dir = sandbox.checkout(REMOTE);
-      const reader = await selectReader(none, deadline(), { checkout: dir });
+      const { reader } = await selectReader(none, deadline(), {
+        checkout: dir,
+      });
       expect(reader).toBeInstanceOf(GlabReader);
       expect(await reader.originRepo()).toEqual({ host: HOST, path: PROJECT });
     });
@@ -133,48 +167,59 @@ describe("selectReader reads a GitLab checkout through glab", () => {
   it("keeps every nested group segment and reads an scp remote the same way", async () => {
     await inSandbox({ glab: `printf '${HOST}\\n'` }, async (sandbox) => {
       const dir = sandbox.checkout(`git@${HOST}:platform/tools/app.git`);
-      const reader = await selectReader(none, deadline(), { checkout: dir });
+      const { reader } = await selectReader(none, deadline(), {
+        checkout: dir,
+      });
       expect(await reader.originRepo()).toEqual({
         host: HOST,
         path: "platform/tools/app",
       });
     });
   });
+});
 
-  it("fails with unknown-host and names glab auth login when glab does not list the host", async () => {
-    await inSandbox({ glab: "printf 'gitlab.com\\n'" }, async (sandbox) => {
-      const dir = sandbox.checkout(REMOTE);
-      const error = await failureOf(
-        selectReader(none, deadline(), { checkout: dir })
-      );
-      expect(error.code).toBe("unknown-host");
-      expect(error.message).toContain(`glab auth login --hostname ${HOST}`);
-    });
+describe("a GitHub origin that is not literally github.com reaches gh, as before GitLab support", () => {
+  const SHA = "a".repeat(40);
+  const closedPr = JSON.stringify({
+    mergeable: "UNKNOWN",
+    mergeStateStatus: "UNKNOWN",
+    reviewDecision: "",
+    headRefOid: SHA,
+    baseRefOid: SHA,
+    headRefName: "topic",
+    baseRefName: "main",
+    state: "CLOSED",
+    mergedAt: null,
+    isDraft: false,
   });
+  const gh = `echo "$*" >> "$(dirname "$0")/../gh-args"
+case "$1 $2 $3 $4" in
+  "pr view 1 --json") echo '{"number":1,"url":"https://github.com/o/r/pull/1"}' ;;
+  "pr view 1 --repo") echo '${closedPr}' ;;
+  *) echo "fake gh: $*" >&2; exit 1 ;;
+esac`;
 
-  it("fails with glab-timeout, not unknown-host, when glab hangs", async () => {
-    await inSandbox({ glab: "sleep 5" }, async (sandbox) => {
-      const dir = sandbox.checkout(REMOTE);
-      const error = await failureOf(
-        selectReader(none, deadline(), { checkout: dir, glabTimeoutMs: 300 })
-      );
-      expect(error.code).toBe("glab-timeout");
-      expect(error.message).toContain("did not answer");
-      expect(error.message).toContain("VPN");
+  for (const remote of [
+    "git@github.com-work:o/r.git",
+    "ssh://git@ssh.github.com:443/o/r.git",
+  ])
+    it(`reads ${remote} through gh and reports the pull request's own verdict`, async () => {
+      await inSandbox({ glab: `printf '${HOST}\\n'`, gh }, async (sandbox) => {
+        const dir = sandbox.checkout(remote);
+        const harness = runtimeFor({ checkout: dir });
+        expect(await mainIn(dir, ["--pr", "1"], harness.runtime)).toBe(6);
+        expect(JSON.parse(harness.stdout.join(""))).toMatchObject({
+          blocker: {
+            kind: "merge-gate",
+            reason: "closed-without-merge",
+            pr: { owner: "o", repo: "r", number: 1 },
+          },
+        });
+        expect(readFileSync(join(sandbox.root, "gh-args"), "utf8")).toContain(
+          "pr view 1 --repo o/r --json"
+        );
+      });
     });
-  });
-
-  it("refuses an origin forge it cannot read, without running glab", async () => {
-    await inSandbox({ origin: "exit 0", glab: MARKER }, async (sandbox) => {
-      const dir = sandbox.checkout(REMOTE);
-      const error = await failureOf(
-        selectReader(none, deadline(), { checkout: dir })
-      );
-      expect(error.code).toBe("unsupported-forge");
-      expect(error.message).toContain(HOST);
-      expect(glabRan(sandbox)).toBe(false);
-    });
-  });
 });
 
 function runtimeFor(
@@ -201,46 +246,84 @@ function runtimeFor(
 }
 
 describe("watch-pr on a GitLab checkout", () => {
-  it("exits 7 with a glab-timeout verdict when glab does not answer", async () => {
-    await inSandbox({ glab: "sleep 5" }, async (sandbox) => {
-      const harness = runtimeFor({
-        checkout: sandbox.checkout(REMOTE),
-        glabTimeoutMs: 300,
-      });
-      expect(await main(["--pr", "1"], harness.runtime)).toBe(7);
-      const verdict = JSON.parse(harness.stdout.join(""));
-      expect(verdict).toMatchObject({
-        kind: "BLOCKER",
-        exitCode: 7,
-        blocker: {
-          kind: "status-query",
-          failure: {
-            kind: "forge-unavailable",
-            code: "glab-timeout",
-            retryable: false,
+  it("exits 7 with a glab-timeout verdict when glab does not answer and gh finds no GitHub remote", async () => {
+    await inSandbox(
+      { glab: "sleep 5", gh: GH_FINDS_NO_REMOTE },
+      async (sandbox) => {
+        const dir = sandbox.checkout(REMOTE);
+        const harness = runtimeFor({ checkout: dir, glabTimeoutMs: 300 });
+        expect(await mainIn(dir, ["--pr", "1"], harness.runtime)).toBe(7);
+        const verdict = JSON.parse(harness.stdout.join(""));
+        expect(verdict).toMatchObject({
+          kind: "BLOCKER",
+          exitCode: 7,
+          blocker: {
+            kind: "status-query",
+            failure: {
+              kind: "forge-unavailable",
+              code: "glab-timeout",
+              retryable: false,
+            },
           },
-        },
-      });
-      expect(verdict.blocker.failure.detail).toContain(
-        "glab did not answer within 0.3 s"
-      );
-      expect(verdict.blocker.failure.detail).toContain("VPN");
-      expect(JSON.stringify(verdict)).not.toContain("unknown-host");
-      expect(harness.stderr).toEqual([]);
-    });
+        });
+        expect(verdict.blocker.failure.detail).toContain(
+          "glab did not answer within 0.3 s"
+        );
+        expect(verdict.blocker.failure.detail).toContain("VPN");
+        expect(JSON.stringify(verdict)).not.toContain("unknown-host");
+        expect(harness.stderr).toEqual([]);
+      }
+    );
   });
 
-  it("exits 7 and names glab auth login when glab is logged out", async () => {
+  it("exits 7 and names glab auth login when glab is logged out and gh finds no GitHub remote", async () => {
+    await inSandbox(
+      { glab: "printf 'gitlab.com\\n'", gh: GH_FINDS_NO_REMOTE },
+      async (sandbox) => {
+        const dir = sandbox.checkout(REMOTE);
+        const harness = runtimeFor({ checkout: dir });
+        expect(
+          await mainIn(dir, ["--pr", "1", "--pretty"], harness.runtime)
+        ).toBe(7);
+        const text = harness.stdout.join("");
+        expect(text).toContain("BLOCKER: status-query");
+        expect(text).toContain(`glab auth login --hostname ${HOST}`);
+        expect(text).toContain(
+          `gh could not read the repository either: ${NO_GITHUB_REMOTE}`
+        );
+        expect(text).toContain(
+          "action=fix the problem named in detail, then rearm"
+        );
+        expect(text).not.toContain("GitHub authentication");
+      }
+    );
+  });
+
+  it("names glab auth login and gh's own reason when gh is logged out or not installed", async () => {
+    const loggedOut =
+      "To get started with GitHub CLI, please run:  gh auth login";
+    await inSandbox(
+      { glab: "printf 'gitlab.com\\n'", gh: `echo '${loggedOut}' >&2; exit 4` },
+      async (sandbox) => {
+        const dir = sandbox.checkout(REMOTE);
+        const harness = runtimeFor({ checkout: dir });
+        expect(await mainIn(dir, ["--pr", "1"], harness.runtime)).toBe(7);
+        const { failure } = JSON.parse(harness.stdout.join("")).blocker;
+        expect(failure.code).toBe("unknown-host");
+        expect(failure.detail).toContain(`glab auth login --hostname ${HOST}`);
+        expect(failure.detail).toContain(loggedOut);
+      }
+    );
     await inSandbox({ glab: "printf 'gitlab.com\\n'" }, async (sandbox) => {
-      const harness = runtimeFor({ checkout: sandbox.checkout(REMOTE) });
-      expect(await main(["--pr", "1", "--pretty"], harness.runtime)).toBe(7);
-      const text = harness.stdout.join("");
-      expect(text).toContain("BLOCKER: status-query");
-      expect(text).toContain(`glab auth login --hostname ${HOST}`);
-      expect(text).toContain(
-        "action=fix the problem named in detail, then rearm"
+      process.env.PATH = `${sandbox.bin}:/usr/bin:/bin`;
+      const dir = sandbox.checkout(REMOTE);
+      const harness = runtimeFor({ checkout: dir });
+      expect(await mainIn(dir, ["--pr", "1"], harness.runtime)).toBe(7);
+      const { failure } = JSON.parse(harness.stdout.join("")).blocker;
+      expect(failure.code).toBe("unknown-host");
+      expect(failure.detail).toContain(
+        "gh could not read the repository either: gh is not installed"
       );
-      expect(text).not.toContain("GitHub authentication");
     });
   });
 

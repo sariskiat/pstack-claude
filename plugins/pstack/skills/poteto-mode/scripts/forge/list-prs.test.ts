@@ -96,6 +96,9 @@ const messageOf = async (promise: Promise<unknown>): Promise<string> =>
 const codeOf = async (promise: Promise<unknown>): Promise<string> =>
   ((await rejection(promise)) as ForgeError).code;
 const ghScript = `console.log(JSON.stringify(${JSON.stringify(GH_JSON)}));`;
+const NO_GITHUB_REMOTE =
+  "none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`";
+const ghFindsNoRemote = `console.error(${JSON.stringify(NO_GITHUB_REMOTE)}); process.exit(1);`;
 
 const mr = (iid: number, state: string, branch = `b${iid}`) => ({
   iid,
@@ -139,6 +142,24 @@ describe("a GitHub checkout lists through gh exactly as the worktree audit did",
     await withFakes({ gh: ghScript }, async (fakes) => {
       expect(await listOwnPullRequests(fakes.checkout(null))).toEqual(GH_JSON);
     });
+  });
+
+  test("an SSH host alias and ssh.github.com on port 443 list through gh as before GitLab support", async () => {
+    await withFakes(
+      { gh: ghScript, glab: `console.log('${HOST}');` },
+      async (fakes) => {
+        for (const remote of [
+          "git@github.com-work:o/r.git",
+          "ssh://git@ssh.github.com:443/o/r.git",
+        ])
+          expect(await listOwnPullRequests(fakes.checkout(remote))).toEqual(
+            GH_JSON
+          );
+        expect(fakes.calls().filter((call) => call.tool === "gh")).toHaveLength(
+          2
+        );
+      }
+    );
   });
 
   test("reports a gh failure with its first line", async () => {
@@ -281,14 +302,25 @@ console.error('glab: 401 Unauthorized (HTTP 401)'); process.exit(1);`,
     );
   });
 
-  test("a host glab does not list fails with unknown-host, and a hung glab with glab-timeout", async () => {
-    await withFakes({ glab: "console.log('gitlab.com');" }, async (fakes) => {
-      expect(await codeOf(listOwnPullRequests(fakes.checkout(remote)))).toBe(
-        "unknown-host"
-      );
-    });
+  test("a host glab does not list fails with unknown-host, and a hung glab with glab-timeout, once gh finds no GitHub remote", async () => {
     await withFakes(
-      { glab: "await new Promise((r) => setTimeout(r, 5000));" },
+      { glab: "console.log('gitlab.com');", gh: ghFindsNoRemote },
+      async (fakes) => {
+        const error = (await rejection(
+          listOwnPullRequests(fakes.checkout(remote))
+        )) as ForgeError;
+        expect(error.code).toBe("unknown-host");
+        expect(error.message).toContain(`glab auth login --hostname ${HOST}`);
+        expect(error.message).toContain(
+          `gh could not read the repository either: ${NO_GITHUB_REMOTE}`
+        );
+      }
+    );
+    await withFakes(
+      {
+        glab: "await new Promise((r) => setTimeout(r, 5000));",
+        gh: ghFindsNoRemote,
+      },
       async (fakes) => {
         expect(
           await codeOf(
@@ -319,15 +351,18 @@ describe("the command line", () => {
   });
 
   test("exits 1 and prints the ForgeError code when the forge cannot be resolved", async () => {
-    await withFakes({ glab: "console.log('gitlab.com');" }, async (fakes) => {
-      const result = spawnSync(
-        process.execPath,
-        [script, fakes.checkout(`https://${HOST}/g/p.git`)],
-        { encoding: "utf8", env: process.env }
-      );
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("ForgeError[unknown-host]");
-      expect(result.stdout).toBe("");
-    });
+    await withFakes(
+      { glab: "console.log('gitlab.com');", gh: ghFindsNoRemote },
+      async (fakes) => {
+        const result = spawnSync(
+          process.execPath,
+          [script, fakes.checkout(`https://${HOST}/g/p.git`)],
+          { encoding: "utf8", env: process.env }
+        );
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("ForgeError[unknown-host]");
+        expect(result.stdout).toBe("");
+      }
+    );
   });
 });

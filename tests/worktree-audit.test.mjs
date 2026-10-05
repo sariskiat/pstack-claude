@@ -376,7 +376,8 @@ console.log(JSON.stringify(args[3].includes("page=1") ? [{ iid: 3, state: "merge
   });
 
   test("a forge it cannot resolve fails with the ForgeError code in the message", () => {
-    withBins({ glab: `console.log("gitlab.com");` }, (root) => {
+    const noGitHubRemote = "none of the git remotes configured for this repository point to a known GitHub host";
+    withBins({ glab: `console.log("gitlab.com");`, gh: `console.error("${noGitHubRemote}"); process.exit(1);` }, (root) => {
       expect(() => runListPrs(checkout(root, "https://git.example.net/g/p.git"))).toThrow(/unknown-host/);
     });
   });

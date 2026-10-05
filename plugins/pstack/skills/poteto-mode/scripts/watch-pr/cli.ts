@@ -6,7 +6,13 @@ import {
   InvalidArgumentError,
   Option,
 } from "commander";
-import { ForgeError, gitlabProjectForCheckout } from "../forge/forge.ts";
+import {
+  ForgeError,
+  NOT_INSTALLED,
+  checkoutForge,
+  ghFoundNoRepository,
+  neitherForge,
+} from "../forge/forge.ts";
 import {
   GhGitHubReader,
   WatcherQueryError,
@@ -167,42 +173,75 @@ export interface CliRuntime {
 }
 const isLookup = (reader: CliRuntime["reader"]): reader is ForgeLookup =>
   "checkout" in reader;
+export interface ReaderChoice {
+  readonly reader: T.ForgeReader;
+  readonly ifGhFails: ForgeError | null;
+}
 export async function selectReader(
   options: Pick<CliOptions, "owner" | "repo">,
   deadline: WatchDeadline,
   lookup: ForgeLookup
-): Promise<T.ForgeReader> {
+): Promise<ReaderChoice> {
   if (options.owner !== null && options.repo !== null)
-    return new GhGitHubReader(deadline);
-  const project = await gitlabProjectForCheckout(lookup.checkout, {
+    return { reader: new GhGitHubReader(deadline), ifGhFails: null };
+  const forge = await checkoutForge(lookup.checkout, {
     glabTimeoutMs: lookup.glabTimeoutMs,
   });
-  return project === null
-    ? new GhGitHubReader(deadline)
-    : new GlabReader(project, deadline, { cwd: lookup.checkout });
+  return forge.kind === "gitlab"
+    ? {
+        reader: new GlabReader(forge.project, deadline, {
+          cwd: lookup.checkout,
+        }),
+        ifGhFails: null,
+      }
+    : { reader: new GhGitHubReader(deadline), ifGhFails: forge.ifGhFails };
 }
-function seedContext(
-  reader: T.ForgeReader,
+function ghFailure(
+  error: unknown
+): { readonly code: number; readonly line: string } | null {
+  if (
+    error instanceof WatcherQueryError &&
+    error.failure.kind === "command-exit"
+  )
+    return { code: error.failure.code, line: error.failure.detail };
+  if (error instanceof Error && "code" in error && error.code === "ENOENT")
+    return { code: NOT_INSTALLED, line: "" };
+  return null;
+}
+async function seedContext(
+  choice: ReaderChoice,
   forge: RenderForge,
   options: CliOptions
 ): Promise<T.PrContext> {
   const pr = options.pr ?? options.stackPrs[0] ?? null;
-  if (forge === "github")
-    return resolveContext({
-      reader,
+  if (forge === "gitlab") {
+    if (options.owner !== null || options.repo !== null)
+      throw new WatcherQueryError({
+        kind: "forge-unavailable",
+        retryable: false,
+        code: "owner-repo-on-gitlab",
+        detail:
+          "--owner and --repo name a GitHub repository, but this checkout is on GitLab",
+      });
+    return choice.reader.currentPr(pr);
+  }
+  try {
+    return await resolveContext({
+      reader: choice.reader,
       owner: options.owner,
       repo: options.repo,
       pr,
     });
-  if (options.owner !== null || options.repo !== null)
-    throw new WatcherQueryError({
-      kind: "forge-unavailable",
-      retryable: false,
-      code: "owner-repo-on-gitlab",
-      detail:
-        "--owner and --repo name a GitHub repository, but this checkout is on GitLab",
-    });
-  return reader.currentPr(pr);
+  } catch (error) {
+    const gh = ghFailure(error);
+    if (
+      choice.ifGhFails !== null &&
+      gh !== null &&
+      ghFoundNoRepository(gh.code, gh.line)
+    )
+      throw neitherForge(choice.ifGhFails, gh.code, gh.line);
+    throw error;
+  }
 }
 function realRuntime(timeout: number): CliRuntime {
   const deadline = new WatchDeadline(timeout, () => performance.now() / 1_000);
@@ -246,11 +285,12 @@ export async function main(
   let reader: T.ForgeReader;
   let contexts: T.NonEmpty<T.PrContext>;
   try {
-    reader = isLookup(runtime.reader)
+    const choice = isLookup(runtime.reader)
       ? await selectReader(options, runtime.deadline, runtime.reader)
-      : runtime.reader;
+      : { reader: runtime.reader, ifGhFails: null };
+    reader = choice.reader;
     forge = reader instanceof GlabReader ? "gitlab" : "github";
-    const seed = await seedContext(reader, forge, options);
+    const seed = await seedContext(choice, forge, options);
     contexts =
       nonEmpty(options.stackPrs.map((number) => ({ ...seed, number }))) ??
       (options.mode === "single" ? [seed] : await discoverStack(reader, seed));

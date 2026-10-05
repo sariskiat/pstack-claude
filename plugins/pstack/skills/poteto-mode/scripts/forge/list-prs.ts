@@ -1,7 +1,9 @@
 import {
   ForgeError,
   capture,
-  gitlabProjectForCheckout,
+  checkoutForge,
+  ghFoundNoRepository,
+  neitherForge,
   type ProjectRef,
 } from "./forge.ts";
 
@@ -39,11 +41,14 @@ const STATE_BY_MERGE_REQUEST_STATE = new Map<string, ListedPr["state"]>([
   ["closed", "CLOSED"],
 ]);
 
+const firstLine = (stderr: string): string =>
+  stderr.trim().split(/\r?\n/, 1)[0]?.slice(0, 240) ?? "";
+
 function failed(
   result: { readonly code: number; readonly stderr: string },
   what: string
 ): never {
-  const reason = result.stderr.trim().split(/\r?\n/, 1)[0]?.slice(0, 240);
+  const reason = firstLine(result.stderr);
   throw new Error(
     `${what} failed${reason ? `: ${reason}` : ` (exit ${result.code})`}`
   );
@@ -112,10 +117,15 @@ export async function listOwnPullRequests(
   cwd: string,
   options: { readonly glabTimeoutMs?: number } = {}
 ): Promise<readonly ListedPr[]> {
-  const project = await gitlabProjectForCheckout(cwd, options);
-  if (project !== null) return gitlabMergeRequests(project);
+  const forge = await checkoutForge(cwd, options);
+  if (forge.kind === "gitlab") return gitlabMergeRequests(forge.project);
   const result = await capture(GITHUB_LIST, LIST_TIMEOUT_MS, cwd);
-  if (result.code !== 0) failed(result, "gh pr list");
+  if (result.code !== 0) {
+    const line = firstLine(result.stderr);
+    if (forge.ifGhFails !== null && ghFoundNoRepository(result.code, line))
+      throw neitherForge(forge.ifGhFails, result.code, line);
+    failed(result, "gh pr list");
+  }
   return JSON.parse(result.stdout) as readonly ListedPr[];
 }
 

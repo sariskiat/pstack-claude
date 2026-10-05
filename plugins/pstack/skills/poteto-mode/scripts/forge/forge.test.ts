@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   currentBranch,
+  checkoutForge,
   detectForgeEnv,
-  gitlabProjectForCheckout,
   ForgeError,
+  ghFoundNoRepository,
   GLAB_TIMEOUT_MS,
   ownerAndName,
   parseGlabHosts,
@@ -550,7 +551,7 @@ describe("currentBranch", () => {
   });
 });
 
-describe("gitlabProjectForCheckout", () => {
+describe("checkoutForge", () => {
   const dirs: string[] = [];
   const checkout = async (remote: string | null): Promise<string> => {
     const dir = await mkdtemp(join(tmpdir(), "forge-checkout-"));
@@ -570,8 +571,15 @@ describe("gitlabProjectForCheckout", () => {
       () => true,
       () => false
     );
+  const reasonOf = async (remote: string, glabTimeoutMs?: number) => {
+    const forge = await checkoutForge(await checkout(remote), {
+      glabTimeoutMs,
+    });
+    if (forge.kind !== "github") throw new Error("expected gh");
+    return forge.ifGhFails?.code;
+  };
 
-  test("a github.com origin, no origin, and an unreadable origin are not a GitLab project and never run glab", async () => {
+  test("a github.com origin, no origin, and an unreadable origin go to gh with no other reason and never run glab", async () => {
     await withFakeBins({ glab: GLAB_RAN }, async (bin) => {
       try {
         for (const remote of [
@@ -579,9 +587,10 @@ describe("gitlabProjectForCheckout", () => {
           null,
           "/srv/git/local.git",
         ])
-          expect(
-            await gitlabProjectForCheckout(await checkout(remote))
-          ).toBeNull();
+          expect(await checkoutForge(await checkout(remote))).toEqual({
+            kind: "github",
+            ifGhFails: null,
+          });
         expect(await ran(bin)).toBe(false);
       } finally {
         await cleanup();
@@ -593,56 +602,91 @@ describe("gitlabProjectForCheckout", () => {
     await withFakeBins({ glab: "printf 'gitlab.example.com\\n'" }, async () => {
       try {
         expect(
-          await gitlabProjectForCheckout(
+          await checkoutForge(
             await checkout("git@gitlab.example.com:platform/tools/app.git")
           )
-        ).toEqual({ host: "gitlab.example.com", path: "platform/tools/app" });
+        ).toEqual({
+          kind: "gitlab",
+          project: { host: "gitlab.example.com", path: "platform/tools/app" },
+        });
       } finally {
         await cleanup();
       }
     });
   });
 
-  test("a host that glab does not list is unknown-host, and a hung glab is glab-timeout", async () => {
+  test("an SSH host alias and ssh.github.com go to gh as before GitLab support, keeping why they are not GitLab", async () => {
+    await withFakeBins({ glab: "printf 'gitlab.example.com\\n'" }, async () => {
+      try {
+        for (const remote of [
+          "git@github.com-work:o/r.git",
+          "ssh://git@ssh.github.com:443/o/r.git",
+        ])
+          expect(await reasonOf(remote)).toBe("unknown-host");
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+
+  test("a host that glab does not list keeps unknown-host, and a hung glab keeps glab-timeout, for when gh fails too", async () => {
     const remote = "https://gitlab.example.com/g/p.git";
     await withFakeBins({ glab: "printf 'gitlab.com\\n'" }, async () => {
       try {
-        const error = await gitlabProjectForCheckout(
-          await checkout(remote)
-        ).catch((e: unknown) => e);
-        expect((error as ForgeError).code).toBe("unknown-host");
+        expect(await reasonOf(remote)).toBe("unknown-host");
       } finally {
         await cleanup();
       }
     });
     await withFakeBins({ glab: "sleep 5" }, async () => {
       try {
-        const error = await gitlabProjectForCheckout(await checkout(remote), {
-          glabTimeoutMs: 300,
-        }).catch((e: unknown) => e);
-        expect((error as ForgeError).code).toBe("glab-timeout");
+        expect(await reasonOf(remote, 300)).toBe("glab-timeout");
       } finally {
         await cleanup();
       }
     });
   });
 
-  test("an origin CLI on PATH makes a non-GitHub host unsupported and leaves a GitHub host alone", async () => {
+  test("an origin CLI on PATH keeps unsupported-forge for a non-GitHub host and leaves a GitHub host alone", async () => {
     await withFakeBins({ origin: "exit 0", glab: GLAB_RAN }, async (bin) => {
       try {
-        const error = await gitlabProjectForCheckout(
-          await checkout("https://gitlab.example.com/g/p.git")
-        ).catch((e: unknown) => e);
-        expect((error as ForgeError).code).toBe("unsupported-forge");
+        expect(await reasonOf("https://gitlab.example.com/g/p.git")).toBe(
+          "unsupported-forge"
+        );
         expect(
-          await gitlabProjectForCheckout(
-            await checkout("https://github.com/o/r")
-          )
-        ).toBeNull();
+          await checkoutForge(await checkout("https://github.com/o/r"))
+        ).toEqual({ kind: "github", ifGhFails: null });
         expect(await ran(bin)).toBe(false);
       } finally {
         await cleanup();
       }
     });
+  });
+});
+
+describe("ghFoundNoRepository", () => {
+  test("is true when gh knows no GitHub remote, has no login, or is not installed", () => {
+    expect(
+      ghFoundNoRepository(
+        1,
+        "none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`"
+      )
+    ).toBe(true);
+    expect(
+      ghFoundNoRepository(
+        4,
+        "To get started with GitHub CLI, please run:  gh auth login"
+      )
+    ).toBe(true);
+    expect(ghFoundNoRepository(127, "gh is not installed")).toBe(true);
+  });
+
+  test("is false once gh found the repository and failed on the pull request", () => {
+    for (const line of [
+      'no pull requests found for branch "topic"',
+      "GraphQL: Could not resolve to a PullRequest with the number of 99. (repository.pullRequest)",
+      "error connecting to api.github.com",
+    ])
+      expect(ghFoundNoRepository(1, line)).toBe(false);
   });
 });

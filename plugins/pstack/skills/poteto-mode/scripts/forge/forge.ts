@@ -153,6 +153,7 @@ export interface Capture {
 }
 
 const TIMED_OUT = 124;
+export const NOT_INSTALLED = 127;
 
 function killGroup(child: {
   readonly pid: number;
@@ -199,7 +200,7 @@ export async function capture(
       clearTimeout(timer);
     }
   } catch {
-    return { code: 127, stdout: "", stderr: "" };
+    return { code: NOT_INSTALLED, stdout: "", stderr: "" };
   }
 }
 
@@ -260,10 +261,15 @@ export async function currentBranch(cwd: string): Promise<string | null> {
   return result.code === 0 && branch !== "" ? branch : null;
 }
 
-export async function gitlabProjectForCheckout(
+/** A host glab lists is read through glab. Every other checkout goes to gh, as before GitLab support; `ifGhFails` keeps why the host is not GitLab, for when gh cannot find the repository either. */
+export type CheckoutForge =
+  | { readonly kind: "gitlab"; readonly project: ProjectRef }
+  | { readonly kind: "github"; readonly ifGhFails: ForgeError | null };
+
+export async function checkoutForge(
   cwd: string,
   options: { readonly glabTimeoutMs?: number } = {}
-): Promise<ProjectRef | null> {
+): Promise<CheckoutForge> {
   let remote: string;
   let host: string;
   try {
@@ -274,17 +280,48 @@ export async function gitlabProjectForCheckout(
       error instanceof ForgeError &&
       (error.code === "no-origin-remote" || error.code === "unparseable-remote")
     )
-      return null;
+      return { kind: "github", ifGhFails: null };
     throw error;
   }
-  if (host === GITHUB_HOST) return null;
-  const forge = resolveForge(remote, await detectForgeEnv(host, options));
-  if (forge.kind === "gitlab") return forge.project;
-  throw new ForgeError(
-    "unsupported-forge",
-    `${forge.project.host} resolves to the ${forge.kind} forge, which this tool does not read`
-  );
+  if (host === GITHUB_HOST) return { kind: "github", ifGhFails: null };
+  let forge: ResolvedForge;
+  try {
+    forge = resolveForge(remote, await detectForgeEnv(host, options));
+  } catch (error) {
+    if (error instanceof ForgeError)
+      return { kind: "github", ifGhFails: error };
+    throw error;
+  }
+  return forge.kind === "gitlab"
+    ? { kind: "gitlab", project: forge.project }
+    : {
+        kind: "github",
+        ifGhFails: new ForgeError(
+          "unsupported-forge",
+          `${forge.project.host} resolves to the ${forge.kind} forge, which this tool does not read`
+        ),
+      };
 }
+
+const GH_NO_GITHUB_REMOTE =
+  "none of the git remotes configured for this repository point to a known GitHub host";
+const GH_AUTH_REQUIRED = 4;
+
+/** True when gh stopped before it found a GitHub repository: no remote it knows, no login, or no gh at all. */
+export const ghFoundNoRepository = (code: number, firstLine: string): boolean =>
+  code === GH_AUTH_REQUIRED ||
+  code === NOT_INSTALLED ||
+  firstLine.startsWith(GH_NO_GITHUB_REMOTE);
+
+export const neitherForge = (
+  whyNotGitLab: ForgeError,
+  code: number,
+  ghLine: string
+): ForgeError =>
+  new ForgeError(
+    whyNotGitLab.code,
+    `${whyNotGitLab.message} gh could not read the repository either: ${code === NOT_INSTALLED ? "gh is not installed" : ghLine || `gh exited ${code}`}`
+  );
 
 export async function resolveCheckoutForge(
   cwd: string
