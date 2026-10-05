@@ -49,7 +49,6 @@ export const ALLOWLIST = {
   "plugins/pstack/skills/poteto-mode/scripts/orch/store.ts": 15,
   "plugins/pstack/skills/poteto-mode/scripts/watch-pr/live-merge-safety.mjs": 3,
   "plugins/pstack/skills/poteto-mode/scripts/watch-pr/shipping.ts": 3,
-  "plugins/pstack/skills/poteto-mode/scripts/worktree-audit.mjs": 3,
   "plugins/pstack/skills/recall/SKILL.md": 1,
   "plugins/pstack/skills/why/SKILL.md": 4,
   "plugins/pstack/skills/why/references/source-playbook.md": 1,
