@@ -6,10 +6,15 @@ export interface ProjectRef {
   readonly path: string;
 }
 
+export type GlabFailure =
+  | { readonly kind: "timed-out"; readonly afterMs: number }
+  | { readonly kind: "not-installed" };
+
 export interface ForgeEnv {
   readonly gitlabHosts: readonly string[];
   readonly originOnPath: boolean;
-  readonly glabTimedOutAfterMs?: number;
+  /** Why glab listed no hosts. Absent when glab answered. */
+  readonly glabFailure?: GlabFailure;
 }
 
 export interface ResolvedForge {
@@ -24,6 +29,7 @@ export type ForgeErrorCode =
   | "unknown-host"
   | "not-github-host"
   | "glab-timeout"
+  | "glab-not-installed"
   | "unsupported-forge";
 
 export class ForgeError extends Error {
@@ -109,10 +115,15 @@ export function resolveForge(remoteUrl: string, env: ForgeEnv): ResolvedForge {
   if (env.gitlabHosts.map(withoutPort).includes(project.host))
     return { kind: "gitlab", project };
   if (project.host === GITHUB_HOST) return { kind: "github", project };
-  if (env.glabTimedOutAfterMs !== undefined)
+  if (env.glabFailure?.kind === "timed-out")
     throw new ForgeError(
       "glab-timeout",
-      `glab did not answer within ${env.glabTimedOutAfterMs / 1000} s, so ${project.host} could not be checked. The network or the VPN is the likely cause. Reconnect, then run the command again.`
+      `glab did not answer within ${env.glabFailure.afterMs / 1000} s, so ${project.host} could not be checked. The network or the VPN is the likely cause. Reconnect, then run the command again.`
+    );
+  if (env.glabFailure?.kind === "not-installed")
+    throw new ForgeError(
+      "glab-not-installed",
+      `glab is not installed, so ${project.host} could not be checked as a GitLab host. Install glab to read its merge requests.`
     );
   throw new ForgeError(
     "unknown-host",
@@ -222,10 +233,16 @@ export async function detectForgeEnv(
     return { gitlabHosts: [], originOnPath };
   const timeoutMs = options.glabTimeoutMs ?? GLAB_TIMEOUT_MS;
   const glab = await capture(["glab", "auth", "status"], timeoutMs);
+  const glabFailure: GlabFailure | null =
+    glab.code === TIMED_OUT
+      ? { kind: "timed-out", afterMs: timeoutMs }
+      : glab.code === NOT_INSTALLED
+        ? { kind: "not-installed" }
+        : null;
   return {
     gitlabHosts: parseGlabHosts(`${glab.stdout}\n${glab.stderr}`),
     originOnPath,
-    ...(glab.code === TIMED_OUT ? { glabTimedOutAfterMs: timeoutMs } : {}),
+    ...(glabFailure === null ? {} : { glabFailure }),
   };
 }
 

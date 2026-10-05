@@ -281,7 +281,7 @@ describe("detectForgeEnv glab cost", () => {
       const forge = await detectForgeEnv(GITLAB, { glabTimeoutMs: 300 });
       const elapsed = performance.now() - started;
       expect(forge.gitlabHosts).toEqual([]);
-      expect(forge.glabTimedOutAfterMs).toBe(300);
+      expect(forge.glabFailure).toEqual({ kind: "timed-out", afterMs: 300 });
       expect(elapsed).toBeGreaterThanOrEqual(250);
       expect(elapsed).toBeLessThan(2000);
     });
@@ -430,7 +430,7 @@ describe("a glab that does not answer", () => {
   const hung = (over: Partial<ForgeEnv> = {}): ForgeEnv => ({
     gitlabHosts: [],
     originOnPath: false,
-    glabTimedOutAfterMs: 10_000,
+    glabFailure: { kind: "timed-out", afterMs: 10_000 },
     ...over,
   });
 
@@ -470,12 +470,28 @@ describe("a glab that does not answer", () => {
       const forge = await detectForgeEnv("gitlab.example.com", {
         glabTimeoutMs: 5000,
       });
-      expect(forge.glabTimedOutAfterMs).toBeUndefined();
+      expect(forge.glabFailure).toBeUndefined();
       const error = failure(() => resolveForge(REMOTE, forge));
       expect(error.code).toBe("unknown-host");
       expect(error.message).toContain(
         "glab auth login --hostname gitlab.example.com"
       );
+    });
+  });
+});
+
+describe("a glab that is not installed", () => {
+  test("resolves to glab-not-installed and does not ask to log in to glab", async () => {
+    await withFakeBins({}, async (dir) => {
+      process.env.PATH = `${dir}:/usr/bin:/bin`;
+      const forge = await detectForgeEnv("gitlab.example.com");
+      expect(forge.glabFailure).toEqual({ kind: "not-installed" });
+      const error = failure(() =>
+        resolveForge("https://gitlab.example.com/group/project.git", forge)
+      );
+      expect(error.code).toBe("glab-not-installed");
+      expect(error.message).toContain("glab is not installed");
+      expect(error.message).not.toContain("glab auth login");
     });
   });
 });
@@ -498,7 +514,7 @@ describe("the glab timeout default", () => {
       process.env.PATH = `${dir}:${saved}`;
       const forge = await detectForgeEnv("gitlab.example.com");
       expect(forge.gitlabHosts).toEqual(["gitlab.example.com"]);
-      expect(forge.glabTimedOutAfterMs).toBeUndefined();
+      expect(forge.glabFailure).toBeUndefined();
     } finally {
       process.env.PATH = saved;
       await rm(dir, { recursive: true, force: true });

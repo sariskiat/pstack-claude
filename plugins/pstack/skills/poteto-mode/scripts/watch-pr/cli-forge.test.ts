@@ -327,6 +327,19 @@ describe("watch-pr on a GitLab checkout", () => {
     });
   });
 
+  it("says glab is not installed, not unknown-host, when glab is missing and gh finds no GitHub remote", async () => {
+    await inSandbox({ gh: GH_FINDS_NO_REMOTE }, async (sandbox) => {
+      process.env.PATH = `${sandbox.bin}:/usr/bin:/bin`;
+      const dir = sandbox.checkout(REMOTE);
+      const harness = runtimeFor({ checkout: dir });
+      expect(await mainIn(dir, ["--pr", "1"], harness.runtime)).toBe(7);
+      const { failure } = JSON.parse(harness.stdout.join("")).blocker;
+      expect(failure.code).toBe("glab-not-installed");
+      expect(failure.detail).toContain("glab is not installed");
+      expect(failure.detail).not.toContain("glab auth login");
+    });
+  });
+
   it("reads a green merge request as READY through the unchanged policy", async () => {
     const { reader } = glabReader({
       mr: fixture("mr-green.json"),
