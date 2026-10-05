@@ -157,7 +157,6 @@ export function parseGlabHosts(output: string): readonly string[] {
     .filter((line) => /^[A-Za-z0-9][A-Za-z0-9.-]*(:\d+)?$/.test(line));
 }
 
-/** Runs `glab auth status` only when it can change the answer: not for github.com, not when origin wins. */
 export async function detectForgeEnv(
   remoteHost: string,
   options: { readonly glabTimeoutMs?: number } = {}

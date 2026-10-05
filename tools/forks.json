@@ -194,7 +194,7 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/types.ts": {
       "kind": "policy",
-      "why": "Adds the merge gate, landing revision, and deadline failure types the port's watcher reports. Names a project as ProjectRef {host, path} in place of Repository {owner, repo}, so nested GitLab groups fit.",
+      "why": "Adds the merge gate, landing revision, and deadline failure types the port's watcher reports. Names a project as ProjectRef {host, path} in place of Repository {owner, repo}, so nested GitLab groups fit. The ProjectRef it re-exports comes from forge/forge.ts, whose resolver picks the Origin forge when any executable named origin is on PATH, per the playbook rule that origin wins when its CLI is available, so a stray binary of that name steers it.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },
