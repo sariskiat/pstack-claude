@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import {
@@ -13,10 +12,40 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import {
+  NotFoundError,
+  UsageError,
+  UserError,
+  type NotFoundOutput,
+} from "./errors.ts";
+import { defaultForge, readStackOnForge, type ForgeFactory } from "./frontier.ts";
+import {
+  branchOrOriginTip,
+  branchTip,
+  isAncestor,
+  mergeBase,
+} from "./git.ts";
+import { restackBranches } from "./restack.ts";
+import {
+  STACK_HEADER,
+  appendRow,
+  chainDrift,
+  dropRow,
+  parseBranchName,
+  parseCommitSha,
+  parseStack,
+  planRestack,
+  restackedRows,
+  stackCells,
+  type BranchName,
+  type CommitSha,
+  type StackRow,
+} from "./stack.ts";
 
 const UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief";
 const LEDGER_HEADER = "pr\tsha\tverdict\tevidence\tverifier\tts";
 const LOCK_FILE = ".orch.lock";
+const RESTACK_WORKTREE = ".restack-wt";
 
 export type Verdict =
   | "live-ui-verified"
@@ -170,13 +199,37 @@ export interface SetFrontierParams {
   readonly prs?: readonly number[];
 }
 
+export interface AddStackParams {
+  readonly repo: string;
+  readonly branch: string;
+  readonly parent: string;
+  readonly parentTip?: string;
+}
+
+export interface DropStackParams {
+  readonly branch: string;
+}
+
+export interface RestackParams {
+  readonly repo: string;
+}
+
+/** `landed` is empty when nothing had merged. `base` is null when no branch was left to rebase. */
+export interface RestackResult {
+  readonly landed: readonly BranchName[];
+  readonly base: CommitSha | null;
+  readonly rebased: boolean;
+  readonly rows: readonly StackRow[];
+}
+
 export interface AddStandingParams {
   readonly line: string;
 }
 
 export interface OpenStoreOptions {
+  readonly actor?: string;
   readonly force?: boolean;
-  readonly gt?: string;
+  readonly forge?: ForgeFactory;
   readonly onLockStolen?: (holder: string) => void;
   readonly onStaleLock?: (holder: string) => void;
 }
@@ -209,6 +262,12 @@ export interface Store {
     readonly set: (params: SetFrontierParams) => Promise<Frontier>;
     readonly show: () => Promise<Frontier>;
   };
+  readonly stack: {
+    readonly add: (params: AddStackParams) => Promise<StackRow>;
+    readonly show: () => Promise<readonly StackRow[]>;
+    readonly drop: (params: DropStackParams) => Promise<StackRow>;
+  };
+  readonly restack: (params: RestackParams) => Promise<RestackResult>;
   readonly standing: {
     readonly show: () => Promise<readonly StandingLine[]>;
     readonly add: (params: AddStandingParams) => Promise<StandingLine>;
@@ -220,21 +279,8 @@ export interface Store {
   readonly close: () => Promise<void>;
 }
 
-export interface NotFoundOutput {
-  readonly compact: string;
-  readonly json: unknown;
-}
-
-export class UserError extends Error {}
-export class UsageError extends UserError {}
-export class NotFoundError extends UserError {
-  public constructor(
-    message: string,
-    public readonly output?: NotFoundOutput
-  ) {
-    super(message);
-  }
-}
+export { NotFoundError, UsageError, UserError };
+export type { NotFoundOutput };
 
 function errorCode(error: unknown): string | null {
   if (
@@ -246,10 +292,6 @@ function errorCode(error: unknown): string | null {
     return error.code;
   }
   return null;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -750,6 +792,51 @@ async function readStanding(
   return result;
 }
 
+async function readStack(store: string): Promise<readonly StackRow[]> {
+  return parseStack(await readTsv(join(store, "stack.tsv"), STACK_HEADER, 3));
+}
+
+async function saveStack(
+  store: string,
+  rows: readonly StackRow[]
+): Promise<void> {
+  await writeTsv(join(store, "stack.tsv"), STACK_HEADER, rows.map(stackCells));
+}
+
+const STACKER_ORDER = /^stacker: ([A-Za-z0-9][A-Za-z0-9._-]*)$/;
+
+/** The stacker is the id in the standing order "stacker: <id>". Any other caller, or one with no id, is refused. */
+async function requireStacker(
+  store: string,
+  actor: string | undefined
+): Promise<void> {
+  const holders = (await readStanding(store)).flatMap((item) => {
+    const match = STACKER_ORDER.exec(item.line);
+    return match === null ? [] : [match[1] ?? ""];
+  });
+  const [holder] = holders;
+  if (holder === undefined) {
+    throw new UserError(
+      'no stacker is recorded; add the standing order "stacker: <id>" first'
+    );
+  }
+  if (holders.length > 1) {
+    throw new UserError(
+      `preferences.md records ${holders.length} stackers (${holders.join(", ")}); keep one`
+    );
+  }
+  if (actor === undefined || actor.trim().length === 0) {
+    throw new UserError(
+      `only the stacker (${holder}) writes the stack; set --as ${holder} or ORCH_ACTOR`
+    );
+  }
+  if (actor !== holder) {
+    throw new UserError(
+      `${actor} is not the stacker; only ${holder} writes the stack`
+    );
+  }
+}
+
 function countValues(values: readonly string[]): Counts {
   const result: Record<string, number> = {};
   for (const value of values) {
@@ -968,232 +1055,6 @@ function countLine(value: Counts): string {
     : entries.map(([name, count]) => `${name}=${count}`).join(", ");
 }
 
-const OPEN_GT_PR_STATUSES = new Set([
-  "Trunk branch locked",
-  "Changes requested",
-  "Waiting on PRs in this stack to merge",
-  "Waiting on downstack merge state",
-  "Draft",
-  "Required checks failed",
-  "Undergoing failure detection",
-  "Merge queue failed on current head commit",
-  "Handed off to merge queue...",
-  "Waiting on downstack",
-  "Merge conflicts",
-  "Needs reviewers",
-  "Needs approvals",
-  "Needs restack",
-  "Queued to merge...",
-  "Ready to merge",
-  "Ready to merge as stack",
-  "Rebasing...",
-  "Waiting on CI...",
-  "Stale, needs rebase onto trunk",
-  "Unresolved comments",
-  "Waiting on required CI",
-  "Waiting to merge...",
-]);
-
-interface GtPullRequest {
-  readonly pr: number;
-  readonly state: FrontierPrState;
-}
-
-interface GtFrontierEntry extends GtPullRequest {
-  readonly branches: string;
-}
-
-function parseGtPullRequest({
-  branch,
-  detail,
-}: {
-  branch: string;
-  detail: string;
-}): GtPullRequest {
-  const match =
-    /^(?:\[origin\] )?PR #([1-9]\d*)(?: \(([^)\r\n]+)\))?( .+)?$/.exec(
-      detail
-    );
-  const pr = Number(match?.[1] ?? 0);
-  if (match === null || !Number.isSafeInteger(pr)) {
-    throw new UserError(
-      `gt info output has an invalid PR row for branch ${branch}: ${detail}`
-    );
-  }
-  const status = match[2];
-  // A nested-paren status ("Needs approvals (2)") leaves the status group empty.
-  if (status === undefined && match[3]?.startsWith(" (")) {
-    throw new UserError(
-      `gt info output has an invalid PR row for branch ${branch}: ${detail}`
-    );
-  }
-  if (status === "Merged") {
-    return { pr, state: "MERGED" };
-  }
-  if (status === "Closed") {
-    return { pr, state: "CLOSED" };
-  }
-  if (status === undefined || OPEN_GT_PR_STATUSES.has(status)) {
-    return { pr, state: "OPEN" };
-  }
-  throw new UserError(
-    `gt info output has an unknown PR state for branch ${branch}: ${status}`
-  );
-}
-
-// A colour setting such as FORCE_COLOR in the user's environment must not
-// break the gt parsers below.
-function withoutColour(raw: string): string {
-  return raw.replace(/\u001b\[[0-9;]*m/g, "");
-}
-
-function parseGtBranches(raw: string): readonly string[] {
-  const branches: string[] = [];
-  const lines = raw.replace(/\r/g, "").split("\n");
-  for (const [index, line] of lines.entries()) {
-    if (line.length === 0) {
-      continue;
-    }
-    // (?!-): a leading-dash branch would parse as an option to git and gt.
-    const branchMatch =
-      /^(?:│ )*[◯◉] +((?!-)[^\s]+)((?: \([^()\r\n]*\))*)$/.exec(line);
-    if (branchMatch === null) {
-      throw new UserError(
-        `gt log short output has an unparseable line ${index + 1}: ${JSON.stringify(line)}`
-      );
-    }
-    const branch = branchMatch[1] ?? "";
-    if (branches.includes(branch)) {
-      throw new UserError(
-        `gt log short output contains duplicate branch ${branch}`
-      );
-    }
-    branches.push(branch);
-  }
-  const trunk = branches[0];
-  if (trunk === undefined) {
-    throw new UserError("gt log short output did not contain a stack");
-  }
-  return branches.slice(1);
-}
-
-function graphitePullRequest({
-  branch,
-  gt,
-  repo,
-}: {
-  branch: string;
-  gt: string;
-  repo: string;
-}): GtPullRequest {
-  let raw: string;
-  try {
-    raw = withoutColour(
-      execFileSync(gt, ["--no-interactive", "info", branch], {
-        cwd: repo,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      })
-    );
-  } catch (error) {
-    throw new UserError(
-      `gt info ${branch} failed: ${errorMessage(error)}`
-    );
-  }
-  const rows = raw
-    .replace(/\r/g, "")
-    .split("\n")
-    .filter(
-      (line) =>
-        line.startsWith("PR #") || line.startsWith("[origin] PR #")
-    );
-  if (rows.length === 0) {
-    throw new UserError(
-      `gt info output branch ${branch} has no pull request; this clone's gt metadata may predate the submit, so resolve the frontier from the stacker's clone or after gt sync`
-    );
-  }
-  if (rows.length > 1) {
-    throw new UserError(
-      `gt info output contains multiple PRs for branch ${branch}`
-    );
-  }
-  return parseGtPullRequest({ branch, detail: rows[0] ?? "" });
-}
-
-function graphiteFrontier({
-  gt,
-  repo,
-}: {
-  gt: string;
-  repo: string;
-}): readonly GtFrontierEntry[] {
-  let raw: string;
-  try {
-    raw = withoutColour(
-      execFileSync(
-        gt,
-        ["--no-interactive", "log", "short", "--stack", "--reverse"],
-        {
-          cwd: repo,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-        }
-      )
-    );
-  } catch (error) {
-    throw new UserError(
-      `gt log short --stack --reverse failed: ${errorMessage(error)}`
-    );
-  }
-  const result = parseGtBranches(raw).map((branch) => ({
-    branches: branch,
-    ...graphitePullRequest({ branch, gt, repo }),
-  }));
-  if (new Set(result.map((row) => row.pr)).size !== result.length) {
-    throw new UserError("gt info output contains duplicate pull requests");
-  }
-  return result;
-}
-
-function branchSha({
-  branch,
-  repo,
-}: {
-  branch: string;
-  repo: string;
-}): string {
-  let raw: string;
-  try {
-    raw = execFileSync("git", ["rev-parse", branch], {
-      cwd: repo,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch (error) {
-    throw new UserError(
-      `git rev-parse ${branch} failed: ${errorMessage(error)}`
-    );
-  }
-  const sha = raw.trim();
-  if (!/^[0-9a-f]{40,64}$/i.test(sha)) {
-    throw new UserError(`git rev-parse ${branch} returned an invalid SHA`);
-  }
-  return sha;
-}
-
-function resolveFrontier({
-  gt,
-  repo,
-}: {
-  gt: string;
-  repo: string;
-}): readonly FrontierPr[] {
-  return graphiteFrontier({ gt, repo }).map((row) => ({
-    ...row,
-    sha: branchSha({ branch: row.branches, repo }),
-  }));
-}
-
 function validateFrontierPin({
   actual,
   expected,
@@ -1213,14 +1074,14 @@ function validateFrontierPin({
   const extra = actual.filter((pr) => !expectedSet.has(pr));
   const drift: string[] = [];
   if (missing.length > 0) {
-    drift.push(`missing from gt: ${missing.join(",")}`);
+    drift.push(`missing from the stack: ${missing.join(",")}`);
   }
   if (extra.length > 0) {
-    drift.push(`extra in gt: ${extra.join(",")}`);
+    drift.push(`extra in the stack: ${extra.join(",")}`);
   }
   if (missing.length === 0 && extra.length === 0) {
     drift.push(
-      `order differs: expected ${expected.join(",")}; gt ${actual.join(",")}`
+      `order differs: expected ${expected.join(",")}; stack ${actual.join(",")}`
     );
   }
   throw new UserError(`frontier pin mismatch: ${drift.join("; ")}`);
@@ -1521,7 +1382,22 @@ export function openStore(
           throw new UserError("--prs must not contain duplicates");
         }
         const old = await readFrontier(store);
-        const prs = resolveFrontier({ gt: options.gt ?? "gt", repo });
+        const read = await readStackOnForge({
+          forge: options.forge ?? defaultForge,
+          repo,
+          rows: await readStack(store),
+          previous: old,
+        });
+        const drift = chainDrift(read);
+        if (drift.length > 0) {
+          throw new UserError(`frontier drift: ${drift.join("; ")}`);
+        }
+        const prs: readonly FrontierPr[] = read.map((row) => ({
+          pr: row.pr,
+          branches: row.branch,
+          sha: branchTip(repo, row.branch),
+          state: row.state,
+        }));
         if (pin !== undefined) {
           validateFrontierPin({
             actual: prs.map((row) => row.pr),
@@ -1543,6 +1419,77 @@ export function openStore(
         ensureOpen();
         return readFrontier(store);
       },
+    },
+    stack: {
+      add: async (params) => {
+        await beginWrite();
+        await requireStacker(store, options.actor);
+        const repo = resolve(requiredLine(params.repo, "repo directory"));
+        const branch = parseBranchName(params.branch, "branch");
+        const parent = parseBranchName(params.parent, "parent");
+        const rows = await readStack(store);
+        const tip = branchTip(repo, branch);
+        let parentTip: CommitSha;
+        if (params.parentTip === undefined) {
+          parentTip = mergeBase(repo, branchOrOriginTip(repo, parent), tip);
+        } else {
+          parentTip = parseCommitSha(params.parentTip, "parent tip");
+          if (!isAncestor(repo, parentTip, tip)) {
+            throw new UserError(
+              `parent tip ${parentTip} is not an ancestor of ${branch}`
+            );
+          }
+        }
+        const row: StackRow = { branch, parent, parentTip };
+        await saveStack(store, appendRow(rows, row));
+        return row;
+      },
+      show: async () => {
+        ensureOpen();
+        return readStack(store);
+      },
+      drop: async (params) => {
+        await beginWrite();
+        await requireStacker(store, options.actor);
+        const branch = parseBranchName(params.branch, "branch");
+        const { dropped, kept } = dropRow(await readStack(store), branch);
+        await saveStack(store, kept);
+        return dropped;
+      },
+    },
+    restack: async (params) => {
+      await beginWrite();
+      await requireStacker(store, options.actor);
+      const repo = resolve(requiredLine(params.repo, "repo directory"));
+      const rows = await readStack(store);
+      const plan = planRestack(
+        await readStackOnForge({
+          forge: options.forge ?? defaultForge,
+          repo,
+          rows,
+          previous: await readFrontier(store),
+        })
+      );
+      if (plan.kind === "nothing") {
+        return { landed: [], base: null, rebased: false, rows };
+      }
+      const landed = plan.landed.map((row) => row.branch);
+      if (plan.kind === "drop-all") {
+        await saveStack(store, []);
+        return { landed, base: null, rebased: false, rows: [] };
+      }
+      const { base, rebased } = restackBranches({
+        repo,
+        scratch: join(store, RESTACK_WORKTREE),
+        trunk: plan.trunk,
+        survivors: plan.survivors,
+        builtOn: plan.builtOn,
+      });
+      const restacked = restackedRows(plan.survivors, plan.trunk, base, (branch) =>
+        branchTip(repo, branch)
+      );
+      await saveStack(store, restacked);
+      return { landed, base, rebased, rows: restacked };
     },
     standing: {
       show: async () => {
@@ -1612,6 +1559,7 @@ export function openStore(
       await writeIfMissing(join(store, "gates.md"), "");
       await writeIfMissing(join(store, "preferences.md"), "");
       await writeIfMissing(join(store, "frontier.json"), "{}\n");
+      await writeIfMissing(join(store, "stack.tsv"), `${STACK_HEADER}\n`);
       return { store };
     },
     close: async () => {
