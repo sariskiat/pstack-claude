@@ -25,6 +25,7 @@ import {
   isAncestor,
   mergeBase,
 } from "./git.ts";
+import { restackBranches } from "./restack.ts";
 import {
   STACK_HEADER,
   appendRow,
@@ -33,7 +34,10 @@ import {
   parseBranchName,
   parseCommitSha,
   parseStack,
+  planRestack,
+  restackedRows,
   stackCells,
+  type BranchName,
   type CommitSha,
   type StackRow,
 } from "./stack.ts";
@@ -41,6 +45,7 @@ import {
 const UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief";
 const LEDGER_HEADER = "pr\tsha\tverdict\tevidence\tverifier\tts";
 const LOCK_FILE = ".orch.lock";
+const RESTACK_WORKTREE = ".restack-wt";
 
 export type Verdict =
   | "live-ui-verified"
@@ -205,6 +210,18 @@ export interface DropStackParams {
   readonly branch: string;
 }
 
+export interface RestackParams {
+  readonly repo: string;
+}
+
+/** `landed` is empty when nothing had merged. `base` is null when no branch was left to rebase. */
+export interface RestackResult {
+  readonly landed: readonly BranchName[];
+  readonly base: CommitSha | null;
+  readonly rebased: boolean;
+  readonly rows: readonly StackRow[];
+}
+
 export interface AddStandingParams {
   readonly line: string;
 }
@@ -250,6 +267,7 @@ export interface Store {
     readonly show: () => Promise<readonly StackRow[]>;
     readonly drop: (params: DropStackParams) => Promise<StackRow>;
   };
+  readonly restack: (params: RestackParams) => Promise<RestackResult>;
   readonly standing: {
     readonly show: () => Promise<readonly StandingLine[]>;
     readonly add: (params: AddStandingParams) => Promise<StandingLine>;
@@ -1438,6 +1456,40 @@ export function openStore(
         await saveStack(store, kept);
         return dropped;
       },
+    },
+    restack: async (params) => {
+      await beginWrite();
+      await requireStacker(store, options.actor);
+      const repo = resolve(requiredLine(params.repo, "repo directory"));
+      const rows = await readStack(store);
+      const plan = planRestack(
+        await readStackOnForge({
+          forge: options.forge ?? defaultForge,
+          repo,
+          rows,
+          previous: await readFrontier(store),
+        })
+      );
+      if (plan.kind === "nothing") {
+        return { landed: [], base: null, rebased: false, rows };
+      }
+      const landed = plan.landed.map((row) => row.branch);
+      if (plan.kind === "drop-all") {
+        await saveStack(store, []);
+        return { landed, base: null, rebased: false, rows: [] };
+      }
+      const { base, rebased } = restackBranches({
+        repo,
+        scratch: join(store, RESTACK_WORKTREE),
+        trunk: plan.trunk,
+        survivors: plan.survivors,
+        builtOn: plan.builtOn,
+      });
+      const restacked = restackedRows(plan.survivors, plan.trunk, base, (branch) =>
+        branchTip(repo, branch)
+      );
+      await saveStack(store, restacked);
+      return { landed, base, rebased, rows: restacked };
     },
     standing: {
       show: async () => {

@@ -288,6 +288,103 @@ function threePrs(): FakePr[] {
   ];
 }
 
+interface RemoteStack {
+  readonly directory: string;
+  readonly repo: string;
+  readonly server: string;
+  readonly store: Store;
+  readonly prs: FakePr[];
+  readonly reader: ReturnType<typeof swappable>;
+  readonly before: { readonly [branch: string]: string };
+}
+
+const sha = (repo: string, ref: string): string =>
+  git({ repo, args: ["rev-parse", ref] });
+const subjects = (repo: string, range: string): readonly string[] =>
+  git({ repo, args: ["log", "--format=%s", range] }).split("\n");
+
+async function commitFile(
+  repo: string,
+  file: string,
+  content: string,
+  message: string
+): Promise<void> {
+  await writeFile(join(repo, file), content);
+  git({ repo, args: ["add", "."] });
+  git({ repo, args: ["commit", "-m", message] });
+}
+
+/** A bare remote, the stacker's clone with lane/bottom, lane/middle, and lane/top stacked and pushed, and a server clone that lands pull requests. */
+async function remoteStack(): Promise<RemoteStack> {
+  const directory = await makeDirectory();
+  const remote = join(directory, "remote.git");
+  const repo = join(directory, "clone");
+  const server = join(directory, "server");
+  Bun.spawnSync(["git", "init", "--bare", "--initial-branch=main", remote]);
+  await mkdir(repo);
+  git({ repo, args: ["init", "--initial-branch=main"] });
+  for (const dir of [repo]) {
+    git({ repo: dir, args: ["config", "user.name", "Orch Test"] });
+    git({ repo: dir, args: ["config", "user.email", "orch@example.com"] });
+  }
+  git({ repo, args: ["remote", "add", "origin", remote] });
+  await commitFile(repo, "base.txt", "base\n", "base");
+  git({ repo, args: ["push", "-q", "origin", "main"] });
+  git({ repo, args: ["checkout", "-q", "-b", "lane/bottom"] });
+  await commitFile(repo, "f.txt", "one\n", "b1");
+  await commitFile(repo, "f.txt", "two\n", "b2");
+  git({ repo, args: ["checkout", "-q", "-b", "lane/middle"] });
+  await commitFile(repo, "f.txt", "three\n", "m1");
+  git({ repo, args: ["checkout", "-q", "-b", "lane/top"] });
+  await commitFile(repo, "t.txt", "top\n", "t1");
+  git({
+    repo,
+    args: ["push", "-q", "origin", "lane/bottom", "lane/middle", "lane/top"],
+  });
+  git({ repo, args: ["checkout", "-q", "main"] });
+  Bun.spawnSync(["git", "clone", "-q", remote, server]);
+  git({ repo: server, args: ["config", "user.name", "Server"] });
+  git({ repo: server, args: ["config", "user.email", "server@example.com"] });
+
+  await asActor(directory, undefined, async (store) => {
+    await store.init();
+    await store.standing.add({ line: "stacker: stacker-1" });
+  });
+  const prs: FakePr[] = [
+    { number: 10, head: "lane/bottom", base: "main", state: "OPEN" },
+    { number: 11, head: "lane/middle", base: "lane/bottom", state: "OPEN" },
+    { number: 12, head: "lane/top", base: "lane/middle", state: "OPEN" },
+  ];
+  const reader = swappable(fakeForge(prs));
+  const store = useStore(directory, { actor: "stacker-1", forge: reader.forge });
+  await store.stack.add({ repo, branch: "lane/bottom", parent: "main" });
+  await store.stack.add({ repo, branch: "lane/middle", parent: "lane/bottom" });
+  await store.stack.add({ repo, branch: "lane/top", parent: "lane/middle" });
+  await store.frontier.set({ repo });
+  const before = Object.fromEntries(
+    ["lane/bottom", "lane/middle", "lane/top"].map((name) => [name, sha(repo, name)])
+  );
+  return { directory, repo, server, store, prs, reader, before };
+}
+
+/** Lands lane/bottom on the server as the forge would, then reports it merged and moves its child to main. */
+function land(stack: RemoteStack, how: "squash" | "merge-commit"): void {
+  const { server, prs } = stack;
+  git({ repo: server, args: ["fetch", "-q", "origin"] });
+  if (how === "squash") {
+    git({ repo: server, args: ["merge", "-q", "--squash", "origin/lane/bottom"] });
+    git({ repo: server, args: ["commit", "-q", "-m", "squash lane/bottom"] });
+  } else {
+    git({
+      repo: server,
+      args: ["merge", "-q", "--no-ff", "origin/lane/bottom", "-m", "merge lane/bottom"],
+    });
+  }
+  git({ repo: server, args: ["push", "-q", "origin", "main"] });
+  prs[0].state = "MERGED";
+  prs[1].base = "main";
+}
+
 afterEach(async () => {
   for (const store of handles.splice(0).reverse()) {
     await store.close();
@@ -1060,6 +1157,246 @@ esac`,
       prs: [],
       lowestUnmerged: null,
     });
+  });
+});
+
+describe("restack", () => {
+  it.each(["squash", "merge-commit"] as const)(
+    "puts the rows above a %s-merged parent on the trunk tip with only their own commits",
+    async (how) => {
+      const stack = await remoteStack();
+      const { directory, repo, store } = stack;
+      land(stack, how);
+
+      const result = await store.restack({ repo });
+      const base = sha(repo, "origin/main");
+      expect(result).toMatchObject({
+        landed: ["lane/bottom"],
+        base,
+        rebased: true,
+      });
+      expect(sha(repo, "lane/middle^")).toBe(base);
+      expect(sha(repo, "lane/top^")).toBe(sha(repo, "lane/middle"));
+      expect(subjects(repo, `${base}..lane/top`)).toEqual(["t1", "m1"]);
+      expect(sha(repo, "lane/bottom")).toBe(stack.before["lane/bottom"]);
+      expect(
+        (await store.stack.show()).map((row) => [
+          String(row.branch),
+          String(row.parent),
+          String(row.parentTip),
+        ])
+      ).toEqual([
+        ["lane/middle", "main", base],
+        ["lane/top", "lane/middle", sha(repo, "lane/middle")],
+      ]);
+      expect(await readdir(directory)).not.toContain(".restack-wt");
+      expect(git({ repo, args: ["worktree", "list", "--porcelain"] })).not.toContain(
+        ".restack-wt"
+      );
+      expect(git({ repo, args: ["status", "--porcelain"] })).toBe("");
+      expect(git({ repo, args: ["symbolic-ref", "--short", "HEAD"] })).toBe("main");
+
+      expect((await store.frontier.set({ repo })).prs.map((row) => row.state)).toEqual([
+        "OPEN",
+        "OPEN",
+      ]);
+    }
+  );
+
+  it("changes no commit when run twice", async () => {
+    const stack = await remoteStack();
+    const { directory, repo, store } = stack;
+    land(stack, "squash");
+    await store.restack({ repo });
+    const tips = [sha(repo, "lane/middle"), sha(repo, "lane/top")];
+    const file = await readFile(join(directory, "stack.tsv"), "utf8");
+
+    expect(await store.restack({ repo })).toMatchObject({
+      landed: [],
+      rebased: false,
+    });
+    expect([sha(repo, "lane/middle"), sha(repo, "lane/top")]).toEqual(tips);
+    expect(await readFile(join(directory, "stack.tsv"), "utf8")).toBe(file);
+  });
+});
+
+describe("restack after a crash", () => {
+  /** The structure a finished restack leaves, whatever order its steps ran in. */
+  async function expectRestacked(stack: RemoteStack): Promise<void> {
+    const { directory, repo, store } = stack;
+    const base = sha(repo, "origin/main");
+    expect(sha(repo, "lane/middle^")).toBe(base);
+    expect(sha(repo, "lane/top^")).toBe(sha(repo, "lane/middle"));
+    expect(subjects(repo, `${base}..lane/top`)).toEqual(["t1", "m1"]);
+    expect(
+      (await store.stack.show()).map((row) => [
+        String(row.branch),
+        String(row.parentTip),
+      ])
+    ).toEqual([
+      ["lane/middle", base],
+      ["lane/top", sha(repo, "lane/middle")],
+    ]);
+    expect(await readdir(directory)).not.toContain(".restack-wt");
+  }
+
+  it("finishes when the rebase ran and stack.tsv did not get written", async () => {
+    const stack = await remoteStack();
+    const { directory, repo, store } = stack;
+    land(stack, "squash");
+    const stale = await readFile(join(directory, "stack.tsv"), "utf8");
+    await store.restack({ repo });
+    const tips = [sha(repo, "lane/middle"), sha(repo, "lane/top")];
+    await writeFile(join(directory, "stack.tsv"), stale);
+
+    expect(await store.restack({ repo })).toMatchObject({
+      landed: ["lane/bottom"],
+      rebased: false,
+    });
+    expect([sha(repo, "lane/middle"), sha(repo, "lane/top")]).toEqual(tips);
+    await expectRestacked(stack);
+  });
+
+  it("finishes when only the lower branches were moved", async () => {
+    const stack = await remoteStack();
+    const { directory, repo, store } = stack;
+    land(stack, "squash");
+    const stale = await readFile(join(directory, "stack.tsv"), "utf8");
+    await store.restack({ repo });
+    git({
+      repo,
+      args: ["update-ref", "refs/heads/lane/top", stack.before["lane/top"]],
+    });
+    await writeFile(join(directory, "stack.tsv"), stale);
+
+    expect(await store.restack({ repo })).toMatchObject({ rebased: true });
+    await expectRestacked(stack);
+  });
+
+  it("clears a rebase that a killed run left in the scratch worktree", async () => {
+    const stack = await remoteStack();
+    const { directory, repo, store } = stack;
+    land(stack, "squash");
+    git({ repo, args: ["fetch", "-q", "origin"] });
+    const scratch = join(directory, ".restack-wt");
+    git({
+      repo,
+      args: ["worktree", "add", "--detach", "--quiet", scratch, sha(repo, "lane/top")],
+    });
+    const stopped = Bun.spawnSync(
+      ["git", "-C", scratch, "rebase", "-i", "--onto", sha(repo, "origin/main"), stack.before["lane/bottom"]],
+      { env: { ...process.env, GIT_SEQUENCE_EDITOR: "sed -i.bak 's/^pick/edit/'" } }
+    );
+    expect(stopped.exitCode).toBe(0);
+    expect(await readdir(join(repo, ".git", "worktrees"))).toHaveLength(1);
+
+    expect(await store.restack({ repo })).toMatchObject({ rebased: true });
+    await expectRestacked(stack);
+    expect(git({ repo, args: ["worktree", "list", "--porcelain"] })).not.toContain(
+      ".restack-wt"
+    );
+  });
+
+  it("stops at a conflict, changes no branch, and leaves no worktree", async () => {
+    const stack = await remoteStack();
+    const { directory, repo, server, store } = stack;
+    land(stack, "squash");
+    await commitFile(server, "f.txt", "four\n", "trunk edit");
+    git({ repo: server, args: ["push", "-q", "origin", "main"] });
+    const stale = await readFile(join(directory, "stack.tsv"), "utf8");
+
+    await expect(store.restack({ repo })).rejects.toThrow(
+      "the rebase stopped with a conflict in f.txt; no branch was changed"
+    );
+    for (const name of ["lane/middle", "lane/top"]) {
+      expect(sha(repo, name)).toBe(stack.before[name]);
+    }
+    expect(await readFile(join(directory, "stack.tsv"), "utf8")).toBe(stale);
+    expect(await readdir(directory)).not.toContain(".restack-wt");
+    expect(git({ repo, args: ["worktree", "list", "--porcelain"] })).not.toContain(
+      ".restack-wt"
+    );
+  });
+});
+
+describe("restack refusals", () => {
+  it("does nothing when no row has merged", async () => {
+    const { directory, repo, store } = await remoteStack();
+    const file = await readFile(join(directory, "stack.tsv"), "utf8");
+
+    expect(await store.restack({ repo })).toMatchObject({
+      landed: [],
+      base: null,
+      rebased: false,
+    });
+    expect(await readFile(join(directory, "stack.tsv"), "utf8")).toBe(file);
+  });
+
+  it("empties the stack when every row has merged", async () => {
+    const stack = await remoteStack();
+    const { directory, repo, store, prs } = stack;
+    for (const pr of prs) {
+      pr.state = "MERGED";
+      pr.base = "main";
+    }
+
+    expect(await store.restack({ repo })).toMatchObject({
+      landed: ["lane/bottom", "lane/middle", "lane/top"],
+      base: null,
+      rows: [],
+    });
+    expect(await store.stack.show()).toEqual([]);
+    expect(sha(repo, "lane/top")).toBe(stack.before["lane/top"]);
+    expect(await readFile(join(directory, "stack.tsv"), "utf8")).toBe(
+      "branch\tparent\tparent_tip\n"
+    );
+  });
+
+  it("refuses a merge that the trunk does not show yet", async () => {
+    const stack = await remoteStack();
+    stack.prs[0].state = "MERGED";
+    await expect(stack.store.restack({ repo: stack.repo })).rejects.toThrow(
+      "is still at"
+    );
+  });
+
+  it("refuses a closed row, a merge into another branch, and a caller who is not the stacker", async () => {
+    const stack = await remoteStack();
+    const { directory, repo, store, prs } = stack;
+    prs[0].state = "MERGED";
+    prs[1].state = "CLOSED";
+    await expect(store.restack({ repo })).rejects.toThrow(
+      "lane/middle is closed without a merge"
+    );
+    prs[1].state = "OPEN";
+    prs[0].base = "release";
+    await expect(store.restack({ repo })).rejects.toThrow(
+      "lane/bottom merged into release, not into main"
+    );
+    await store.close();
+    await expect(
+      asActor(directory, "worker-7", (worker) => worker.restack({ repo }))
+    ).rejects.toThrow("worker-7 is not the stacker");
+  });
+
+  it("refuses a branch that is checked out and a stray branch in the rewritten range", async () => {
+    const stack = await remoteStack();
+    const { repo, store } = stack;
+    land(stack, "squash");
+
+    git({ repo, args: ["checkout", "-q", "lane/top"] });
+    await expect(store.restack({ repo })).rejects.toThrow(
+      /branch lane\/top is checked out at .*clone/
+    );
+    git({ repo, args: ["checkout", "-q", "main"] });
+
+    git({ repo, args: ["branch", "backup", "lane/middle"] });
+    await expect(store.restack({ repo })).rejects.toThrow(
+      "backup also points into the commits that the restack rewrites"
+    );
+    for (const name of ["lane/middle", "lane/top"]) {
+      expect(sha(repo, name)).toBe(stack.before[name]);
+    }
   });
 });
 

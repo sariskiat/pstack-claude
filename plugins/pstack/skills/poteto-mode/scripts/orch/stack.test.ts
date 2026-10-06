@@ -216,16 +216,30 @@ describe("restack plan", () => {
       landed: [rows[0] as ReadRow],
       survivors: [rows[1] as ReadRow, rows[2] as ReadRow],
       trunk: branch("main"),
+      builtOn: BOTTOM.parentTip,
     });
-    const two = planRestack(read(["MERGED", "MERGED", "OPEN"]));
+    const two = planRestack(
+      read(["MERGED", "MERGED", "OPEN"], ["main", "main"])
+    );
     expect(two.kind === "rebase" && two.survivors.map((r) => r.branch)).toEqual(
       [TOP.branch]
     );
   });
 
   it("only drops rows when everything merged", () => {
-    const rows = read(["MERGED", "MERGED", "MERGED"]);
+    const rows = read(["MERGED", "MERGED", "MERGED"], ["main", "main", "main"]);
     expect(planRestack(rows)).toEqual({ kind: "drop-all", landed: rows });
+  });
+
+  it("refuses a merge that went into a branch other than the trunk", () => {
+    expect(() =>
+      planRestack(read(["MERGED", "MERGED", "OPEN"], ["main", "lane/bottom"]))
+    ).toThrow(
+      "lane/middle merged into lane/bottom, not into main, so its changes are not on main"
+    );
+    expect(() =>
+      planRestack(read(["MERGED", "OPEN", "OPEN"], ["release"]))
+    ).toThrow("lane/bottom merged into release, not into main");
   });
 
   it("refuses a merge above an unmerged row and a closed survivor", () => {

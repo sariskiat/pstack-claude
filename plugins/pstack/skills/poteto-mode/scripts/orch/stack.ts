@@ -28,6 +28,7 @@ export type RestackPlan =
       readonly landed: readonly ReadRow[];
       readonly survivors: readonly [ReadRow, ...ReadRow[]];
       readonly trunk: BranchName;
+      readonly builtOn: CommitSha;
     };
 
 export const STACK_HEADER = "branch\tparent\tparent_tip";
@@ -180,6 +181,13 @@ export function planRestack(rows: readonly ReadRow[]): RestackPlan {
   if (bottom === undefined) {
     return { kind: "nothing" };
   }
+  const trunk = bottom.parent;
+  const elsewhere = landed.filter((row) => row.base !== trunk);
+  if (elsewhere.length > 0) {
+    throw new UserError(
+      `${elsewhere.map((row) => `${row.branch} merged into ${row.base}`).join(", ")}, not into ${trunk}, so its changes are not on ${trunk}`
+    );
+  }
   const closed = survivors.filter((row) => row.state === "CLOSED");
   if (closed.length > 0) {
     throw new UserError(
@@ -193,7 +201,8 @@ export function planRestack(rows: readonly ReadRow[]): RestackPlan {
         kind: "rebase",
         landed,
         survivors: [first, ...rest],
-        trunk: bottom.parent,
+        trunk,
+        builtOn: bottom.parentTip,
       };
 }
 

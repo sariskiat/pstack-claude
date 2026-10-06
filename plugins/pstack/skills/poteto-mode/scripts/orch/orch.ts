@@ -11,6 +11,7 @@ import {
   type Frontier,
   type InboxPointer,
   type OpenGate,
+  type RestackResult,
   type StandingLine,
   type StatusReport,
   type Store,
@@ -171,6 +172,14 @@ function compactRows<T>(
 
 function stackLine(row: StackRow): string {
   return [row.branch, row.parent, row.parentTip].join("\t");
+}
+
+function restackLine(value: RestackResult): string {
+  if (value.landed.length === 0) {
+    return "nothing to restack";
+  }
+  const stack = value.rows.map((row) => `${row.branch}@${row.parentTip}`);
+  return `landed=${value.landed.join(",")} base=${value.base ?? "none"} rebased=${value.rebased} stack=${stack.join(",") || "empty"}`;
 }
 
 function frontierLine(value: Frontier): string {
@@ -576,6 +585,26 @@ function createProgram(io: Io): Command {
         stackLine
       )
   );
+
+  leaf(
+    program,
+    "restack",
+    "rebase the branches above merged parents onto the trunk tip"
+  )
+    .addOption(
+      new Option(
+        "--repo <dir>",
+        "repository directory (or ORCH_REPO)"
+      ).env("ORCH_REPO")
+    )
+    .action((options: RepoOptions) =>
+      runStore(
+        program,
+        io,
+        (store) => store.restack({ repo: repoDirectory(options) }),
+        restackLine
+      )
+    );
 
   leaf(program, "status", "render status.md and print a summary").action(() =>
     runStore(program, io, (store) => store.status.render(), statusLines)
