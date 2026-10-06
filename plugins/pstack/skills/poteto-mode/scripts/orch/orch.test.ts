@@ -241,12 +241,11 @@ function swappable(initial: ForgeFactory): {
   };
 }
 
-/** Runs with a PATH that holds only git, a shell, and the given scripts. */
-async function withFakeBin<T>(
+/** A directory of git, a shell, and the given scripts. A CLI run that gets only this PATH finds nothing else. */
+async function fakeBin(
   directory: string,
-  scripts: Readonly<Record<string, string>>,
-  run: (bin: string) => Promise<T>
-): Promise<T> {
+  scripts: Readonly<Record<string, string>>
+): Promise<string> {
   const bin = join(directory, "fake-bin");
   await mkdir(bin);
   for (const tool of ["git", "bash", "sh", "cat", "dirname"]) {
@@ -259,13 +258,7 @@ async function withFakeBin<T>(
       mode: 0o755,
     });
   }
-  const original = process.env.PATH;
-  process.env.PATH = bin;
-  try {
-    return await run(bin);
-  } finally {
-    process.env.PATH = original;
-  }
+  return bin;
 }
 
 async function stackThree(
@@ -967,7 +960,7 @@ describe("frontier", () => {
     );
   });
 
-  it("reads a GitHub checkout through gh with only git and gh on PATH", async () => {
+  it("reads a GitHub checkout through gh when only git and gh are on PATH", async () => {
     const fixture = await stackFixture();
     await stackThree(fixture);
     const { directory, repo, mergedSha, closedSha, openSha } = fixture;
@@ -975,14 +968,17 @@ describe("frontier", () => {
       repo,
       args: ["remote", "add", "origin", "https://github.com/user/project.git"],
     });
-    const remembered = [
-      { pr: 10, branches: "stack/merged", sha: mergedSha, state: "OPEN" },
-      { pr: 13, branches: "stack/closed", sha: closedSha, state: "OPEN" },
-      { pr: 11, branches: "stack/open", sha: openSha, state: "OPEN" },
-    ];
     await writeFile(
       join(directory, "frontier.json"),
-      JSON.stringify({ generation: 1, prs: remembered, lowestUnmerged: 10 })
+      JSON.stringify({
+        generation: 1,
+        prs: [
+          { pr: 10, branches: "stack/merged", sha: mergedSha, state: "OPEN" },
+          { pr: 13, branches: "stack/closed", sha: closedSha, state: "OPEN" },
+          { pr: 11, branches: "stack/open", sha: openSha, state: "OPEN" },
+        ],
+        lowestUnmerged: 10,
+      })
     );
     const view = (head: string, base: string, state: string) =>
       JSON.stringify({
@@ -997,44 +993,43 @@ describe("frontier", () => {
         mergedAt: state === "MERGED" ? "2026-01-01T00:00:00Z" : null,
         isDraft: false,
       });
-    const listed = JSON.stringify([
-      {
-        number: 11,
-        headRefName: "stack/open",
-        baseRefName: "stack/closed",
-        headRepository: { name: "project" },
-        headRepositoryOwner: { login: "user" },
-      },
-    ]);
-    const gh = `case "$1 $2" in
+    const bin = await fakeBin(directory, {
+      gh: `case "$1 $2" in
   "pr list") cat "$(dirname "$0")/list.json" ;;
   "pr view") cat "$(dirname "$0")/view-$3.json" ;;
   *) echo "unexpected gh $*" >&2; exit 2 ;;
-esac`;
-
-    const frontier = await withFakeBin(
-      directory,
-      { gh },
-      async (bin) => {
-        await writeFile(join(bin, "list.json"), listed);
-        await writeFile(
-          join(bin, "view-10.json"),
-          view("stack/merged", "main", "MERGED")
-        );
-        await writeFile(
-          join(bin, "view-13.json"),
-          view("stack/closed", "stack/merged", "CLOSED")
-        );
-        return useStore(directory).frontier.set({ repo });
-      }
+esac`,
+    });
+    await writeFile(
+      join(bin, "list.json"),
+      JSON.stringify([
+        {
+          number: 11,
+          headRefName: "stack/open",
+          baseRefName: "stack/closed",
+          headRepository: { name: "project" },
+          headRepositoryOwner: { login: "user" },
+        },
+      ])
+    );
+    await writeFile(
+      join(bin, "view-10.json"),
+      view("stack/merged", "main", "MERGED")
+    );
+    await writeFile(
+      join(bin, "view-13.json"),
+      view("stack/closed", "stack/merged", "CLOSED")
     );
 
-    expect(frontier.prs.map((row) => [row.pr, row.state])).toEqual([
-      [10, "MERGED"],
-      [13, "CLOSED"],
-      [11, "OPEN"],
-    ]);
-    expect(frontier.lowestUnmerged).toBe(11);
+    const result = runCli(
+      ["--store", directory, "frontier", "set", "--repo", repo],
+      { PATH: bin, HOME: process.env.HOME }
+    );
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toBe(
+      `generation=2 prs=stack/merged#10@${mergedSha}:MERGED,stack/closed#13@${closedSha}:CLOSED,stack/open#11@${openSha}:OPEN lowest-unmerged=11\n`
+    );
+    expect(result.code).toBe(0);
   });
 
   it("explains a host that neither gh nor glab serves", async () => {
@@ -1045,12 +1040,16 @@ esac`;
       repo,
       args: ["remote", "add", "origin", "https://unknown.example.org/g/p.git"],
     });
+    const bin = await fakeBin(directory, { glab: "exit 0" });
 
-    await withFakeBin(directory, { glab: "exit 0" }, async () => {
-      await expect(useStore(directory).frontier.set({ repo })).rejects.toThrow(
-        "host unknown.example.org"
-      );
-    });
+    const result = runCli(
+      ["--store", directory, "frontier", "set", "--repo", repo],
+      { PATH: bin, HOME: process.env.HOME }
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      "host unknown.example.org is not github.com, not listed by glab auth status"
+    );
   });
 
   it("writes an empty frontier for an empty stack", async () => {
