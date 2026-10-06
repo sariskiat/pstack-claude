@@ -28,6 +28,7 @@ Create `~/.claude/orchestrate/<project-slug>/`, outside the repo and outside the
 - `overview.md` is the durable PR and issue DB. Append. Never rewrite wholesale per event.
 - `units.tsv` has one row per unit: id, track, state, branch, PR, head SHA, brief path. Update rows in place.
 - `frontier.json` is the computed merge frontier, per Stack safety.
+- `stack.tsv` is the ordered stack, one row per branch from the bottom: branch, parent branch, the parent tip SHA the branch was built on. Only the stacker writes it, per Stack safety.
 - `ledger.tsv` is the verification ledger, per Verification.
 - `inbox/` holds completion pointers. `gates.md` parks human gates (question, options, default on no answer).
 - `decisions.tsv` is the trail via the show-me-your-work skill.
@@ -45,7 +46,7 @@ CONTEXT      pointers to files and PRs; upstream reports pasted in full when thi
 ACCEPTANCE   checkable criteria, one per line
 VERIFY       exact commands or the resolved driver skill path, plus known gotchas
 TIMEBOX      rough cap on runtime; on expiry, return partial findings and stop rather than run on
-FORBIDDEN    no gt, no rebase, no force-push, no fixes outside scope, plus unit-specific bans
+FORBIDDEN    no orch stack or restack, no rebase, no force-push, no fixes outside scope, plus unit-specific bans
 REPORT       status, branch, head SHA, PRs, verdict, what you actually ran, deviations,
              suggested follow-ups
 STANDING     <preferences.md pasted verbatim>
@@ -78,9 +79,9 @@ A dependency is a context relay, not just ordering. Undeclared upstream context 
 
 #### Stack safety
 
-- The frontier is a computed object, never narrative. Recompute `frontier.json` from `gt` after every merge and stack mutation because GitHub base refs drift mid-restack while gt tracking is authoritative: ordered PR list, branch names, head SHAs, a generation number, the lowest unmerged PR. Resolve it where gt knows the stack, normally the stacker's clone. A checkout whose gt metadata never saw the submits reports no PRs and the command errors rather than guessing.
-- Exactly one stacker per stack may run `gt`, serialized within its stack. Record the holder in the standing orders. A restack at this scale is slow and blocks whoever runs it, so give it its own unit and keep the coordinator out of it.
-- Workers never rebase and never run `gt`. Babysitters follow `playbooks/babysit.md`, one per stack, scoped to one immutable frontier generation. They report conflicts to the stacker rather than restacking.
+- The frontier is a computed object, never narrative. Recompute `frontier.json` with `orch frontier set --repo <dir>` after every merge and stack mutation: ordered PR list, branch names, head SHAs, a generation number, the lowest unmerged PR. The order comes from `stack.tsv` and the states come from the forge reader that `watch-pr` uses. Forge base refs drift mid-restack while `stack.tsv` stays authoritative, so the command compares the target of each open PR with the parent that `stack.tsv` records. On a mismatch it reports the drift and writes nothing. A merged PR is not in the forge's open list, so its number comes from the previous `frontier.json`. Run the command while a PR is open, and run it in the stacker's clone.
+- Exactly one stacker per stack may write `stack.tsv` or run `orch restack`, serialized within its stack. Record the holder in the standing orders as `stacker: <id>`. `orch stack add`, `orch stack drop`, and `orch restack` refuse a caller whose `--as <id>` or `ORCH_ACTOR` is not that id. `orch stack add <branch> --parent <branch>` appends a branch with the parent tip it was built on. After a parent lands, `orch restack` fetches the trunk and runs `git rebase --update-refs --onto <new base> <recorded parent tip> <top>`, which stays conflict-free after a squash merge, then rewrites `stack.tsv`. A conflict leaves every branch as it was, and a second run changes nothing. It never pushes, so the stacker pushes each rewritten branch with a lease and retargets its PR per [Merge and restack safety](../references/merge-safety.md). A restack at this scale is slow and blocks whoever runs it, so give it its own unit and keep the coordinator out of it.
+- Workers never rebase and never run `orch stack` or `orch restack`. Babysitters follow `playbooks/babysit.md`, one per stack, scoped to one immutable frontier generation. They report conflicts to the stacker rather than restacking.
 - PR closes and retargets go through the stacker only. Closing a base PR orphans every chain above it. Merges and stack surgery are units with briefs like any other.
 - One retro watcher follows merged PRs for reverts, post-merge CI breaks, and orphaned follow-ups.
 
