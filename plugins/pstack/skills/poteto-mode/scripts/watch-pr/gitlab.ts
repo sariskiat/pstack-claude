@@ -132,11 +132,11 @@ const REVIEWER_PAGE_LIMIT = 10;
 const PAGE_SIZE = 100;
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
-function invalid(detail: string): never {
+export function invalid(detail: string): never {
   throw new WatcherQueryError({ kind: "missing-key", retryable: true, detail });
 }
 
-function transient(detail: string): never {
+export function transient(detail: string): never {
   throw new WatcherQueryError({
     kind: "snapshot-changed",
     retryable: true,
@@ -144,12 +144,12 @@ function transient(detail: string): never {
   });
 }
 
-function list(value: unknown, label: string): readonly unknown[] {
+export function list(value: unknown, label: string): readonly unknown[] {
   if (!Array.isArray(value)) return invalid(`${label} must be a list`);
   return value;
 }
 
-function positiveInteger(value: unknown, label: string): number {
+export function positiveInteger(value: unknown, label: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)
     return invalid(`${label} must be a positive integer`);
   return value;
@@ -172,7 +172,7 @@ function boolean(value: unknown, label: string): boolean {
   return value;
 }
 
-function objectId(value: unknown, label: string): string {
+export function objectId(value: unknown, label: string): string {
   const id = text(value, label);
   if (!OBJECT_ID.test(id)) return invalid(`${label} must be a commit id`);
   return id;
@@ -485,7 +485,7 @@ export function checksForPipeline(
   return checks;
 }
 
-function parseBody(stdout: string, endpoint: string): unknown {
+export function parseBody(stdout: string, endpoint: string): unknown {
   try {
     return JSON.parse(stdout);
   } catch (error) {
@@ -506,7 +506,7 @@ function unavailable(code: string, detail: string): WatcherQueryError {
   });
 }
 
-function glabFailure(
+export function glabFailure(
   result: CommandResult,
   host: string,
   endpoint: string
@@ -536,6 +536,31 @@ function glabFailure(
 const fromTargetProject = (mr: Record<string, unknown>): boolean =>
   positiveInteger(mr.source_project_id, "merge request.source_project_id") ===
   positiveInteger(mr.target_project_id, "merge request.target_project_id");
+
+/** Reads every page of a list endpoint, or fails when the list is longer than its limit, so a partial list is never used. */
+export async function readPages(
+  get: (endpoint: string) => Promise<unknown>,
+  endpoint: string,
+  pageLimit: number
+): Promise<readonly unknown[]> {
+  const items: unknown[] = [];
+  const separator = endpoint.includes("?") ? "&" : "?";
+  const path = endpoint.split("?")[0];
+  for (let page = 1; ; page++) {
+    const batch = list(
+      await get(`${endpoint}${separator}per_page=${PAGE_SIZE}&page=${page}`),
+      path
+    );
+    if (batch.length === 0) return items;
+    if (page > pageLimit)
+      throw unavailable(
+        "too-many-items",
+        `${path} has more than ${pageLimit * PAGE_SIZE} items, so a partial list is refused`
+      );
+    items.push(...batch);
+    if (batch.length < PAGE_SIZE) return items;
+  }
+}
 
 export interface GlabReaderOptions {
   readonly cwd?: string;
@@ -601,29 +626,11 @@ export class GlabReader implements T.ForgeReader {
     return parseBody(result.stdout, endpoint);
   }
 
-  private async pages(
+  private pages(
     endpoint: string,
     pageLimit: number
   ): Promise<readonly unknown[]> {
-    const items: unknown[] = [];
-    const separator = endpoint.includes("?") ? "&" : "?";
-    const path = endpoint.split("?")[0];
-    for (let page = 1; ; page++) {
-      const batch = list(
-        await this.api(
-          `${endpoint}${separator}per_page=${PAGE_SIZE}&page=${page}`
-        ),
-        path
-      );
-      if (batch.length === 0) return items;
-      if (page > pageLimit)
-        throw unavailable(
-          "too-many-items",
-          `${path} has more than ${pageLimit * PAGE_SIZE} items, so a partial list is refused`
-        );
-      items.push(...batch);
-      if (batch.length < PAGE_SIZE) return items;
-    }
+    return readPages((next) => this.api(next), endpoint, pageLimit);
   }
 
   private async fetchMergeRequest(context: T.PrContext): Promise<MergeRequest> {
