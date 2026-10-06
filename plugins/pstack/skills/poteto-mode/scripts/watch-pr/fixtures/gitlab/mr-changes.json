@@ -1,0 +1,31 @@
+{
+  "iid": 15,
+  "title": "Changes lane: reviewer requests changes",
+  "state": "opened",
+  "draft": false,
+  "sha": "b562cbaa265eab463510a4e3d7d733a19c9188a8",
+  "source_branch": "lane-changes",
+  "target_branch": "main",
+  "detailed_merge_status": "mergeable",
+  "merge_status": "can_be_merged",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/15",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "fe5dfef22d4546ef7d6be0f600c2a11ced0e9f9d",
+    "head_sha": "b562cbaa265eab463510a4e3d7d733a19c9188a8",
+    "start_sha": "fe5dfef22d4546ef7d6be0f600c2a11ced0e9f9d"
+  },
+  "head_pipeline": {
+    "id": 1765563,
+    "status": "success",
+    "sha": "b562cbaa265eab463510a4e3d7d733a19c9188a8",
+    "ref": "lane-changes",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/group/project/-/pipelines/1765563"
+  }
+}

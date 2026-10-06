@@ -1,0 +1,19 @@
+[
+  {
+    "id": 9503495,
+    "name": "fail-job",
+    "stage": "check",
+    "status": "failed",
+    "allow_failure": false,
+    "failure_reason": "script_failure",
+    "web_url": "https://gitlab.example.com/group/project/-/jobs/9503495"
+  },
+  {
+    "id": 9503494,
+    "name": "pass-job",
+    "stage": "check",
+    "status": "success",
+    "allow_failure": false,
+    "web_url": "https://gitlab.example.com/group/project/-/jobs/9503494"
+  }
+]

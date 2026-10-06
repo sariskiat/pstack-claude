@@ -6,9 +6,14 @@ export interface ProjectRef {
   readonly path: string;
 }
 
+export type GlabFailure =
+  | { readonly kind: "timed-out"; readonly afterMs: number }
+  | { readonly kind: "not-installed" };
+
 export interface ForgeEnv {
   readonly gitlabHosts: readonly string[];
   readonly originOnPath: boolean;
+  readonly glabFailure?: GlabFailure;
 }
 
 export interface ResolvedForge {
@@ -21,7 +26,10 @@ export type ForgeErrorCode =
   | "not-owner-repo"
   | "unparseable-remote"
   | "unknown-host"
-  | "not-github-host";
+  | "not-github-host"
+  | "glab-timeout"
+  | "glab-not-installed"
+  | "unsupported-forge";
 
 export class ForgeError extends Error {
   constructor(
@@ -106,9 +114,19 @@ export function resolveForge(remoteUrl: string, env: ForgeEnv): ResolvedForge {
   if (env.gitlabHosts.map(withoutPort).includes(project.host))
     return { kind: "gitlab", project };
   if (project.host === GITHUB_HOST) return { kind: "github", project };
+  if (env.glabFailure?.kind === "timed-out")
+    throw new ForgeError(
+      "glab-timeout",
+      `glab did not answer within ${env.glabFailure.afterMs / 1000} s, so ${project.host} could not be checked. The network or the VPN is the likely cause. Reconnect, then run the command again.`
+    );
+  if (env.glabFailure?.kind === "not-installed")
+    throw new ForgeError(
+      "glab-not-installed",
+      `glab is not installed, so ${project.host} could not be checked as a GitLab host. Install glab to read its merge requests.`
+    );
   throw new ForgeError(
     "unknown-host",
-    `host ${project.host} is not github.com, not listed by glab auth status, and no origin CLI is on PATH`
+    `host ${project.host} is not github.com, not listed by glab auth status, and no origin CLI is on PATH. For a GitLab host, run: glab auth login --hostname ${project.host}`
   );
 }
 
@@ -138,13 +156,14 @@ export const githubOwnerAndName = (
   project: ProjectRef
 ): ReturnType<typeof ownerAndName> => ownerAndName(requireGithub(project));
 
-interface Capture {
+export interface Capture {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
 }
 
 const TIMED_OUT = 124;
+export const NOT_INSTALLED = 127;
 
 function killGroup(child: {
   readonly pid: number;
@@ -158,9 +177,10 @@ function killGroup(child: {
 }
 export const GLAB_TIMEOUT_MS = 10_000;
 
-async function capture(
+export async function capture(
   argv: readonly string[],
-  timeoutMs?: number
+  timeoutMs?: number,
+  cwd?: string
 ): Promise<Capture> {
   try {
     const child = Bun.spawn([...argv], {
@@ -169,6 +189,7 @@ async function capture(
       stdin: "ignore",
       env: process.env,
       detached: timeoutMs !== undefined,
+      ...(cwd === undefined ? {} : { cwd }),
     });
     const finished = Promise.all([
       new Response(child.stdout).text(),
@@ -189,7 +210,7 @@ async function capture(
       clearTimeout(timer);
     }
   } catch {
-    return { code: 127, stdout: "", stderr: "" };
+    return { code: NOT_INSTALLED, stdout: "", stderr: "" };
   }
 }
 
@@ -209,13 +230,18 @@ export async function detectForgeEnv(
   const originOnPath = origin.code === 0;
   if (originOnPath || remoteHost === GITHUB_HOST)
     return { gitlabHosts: [], originOnPath };
-  const glab = await capture(
-    ["glab", "auth", "status"],
-    options.glabTimeoutMs ?? GLAB_TIMEOUT_MS
-  );
+  const timeoutMs = options.glabTimeoutMs ?? GLAB_TIMEOUT_MS;
+  const glab = await capture(["glab", "auth", "status"], timeoutMs);
+  const glabFailure: GlabFailure | null =
+    glab.code === TIMED_OUT
+      ? { kind: "timed-out", afterMs: timeoutMs }
+      : glab.code === NOT_INSTALLED
+        ? { kind: "not-installed" }
+        : null;
   return {
     gitlabHosts: parseGlabHosts(`${glab.stdout}\n${glab.stderr}`),
     originOnPath,
+    ...(glabFailure === null ? {} : { glabFailure }),
   };
 }
 
@@ -236,6 +262,80 @@ export async function originRemoteUrl(cwd: string): Promise<string> {
     );
   return url;
 }
+
+export async function currentBranch(cwd: string): Promise<string | null> {
+  const result = await capture([
+    "git",
+    "-C",
+    cwd,
+    "symbolic-ref",
+    "--short",
+    "-q",
+    "HEAD",
+  ]);
+  const branch = result.stdout.trim();
+  return result.code === 0 && branch !== "" ? branch : null;
+}
+
+export type CheckoutForge =
+  | { readonly kind: "gitlab"; readonly project: ProjectRef }
+  | { readonly kind: "github"; readonly whyNotGitLab: ForgeError | null };
+
+export async function checkoutForge(
+  cwd: string,
+  options: { readonly glabTimeoutMs?: number } = {}
+): Promise<CheckoutForge> {
+  let remote: string;
+  let host: string;
+  try {
+    remote = await originRemoteUrl(cwd);
+    host = parseRemoteUrl(remote).host;
+  } catch (error) {
+    if (
+      error instanceof ForgeError &&
+      (error.code === "no-origin-remote" || error.code === "unparseable-remote")
+    )
+      return { kind: "github", whyNotGitLab: null };
+    throw error;
+  }
+  if (host === GITHUB_HOST) return { kind: "github", whyNotGitLab: null };
+  let forge: ResolvedForge;
+  try {
+    forge = resolveForge(remote, await detectForgeEnv(host, options));
+  } catch (error) {
+    if (error instanceof ForgeError)
+      return { kind: "github", whyNotGitLab: error };
+    throw error;
+  }
+  return forge.kind === "gitlab"
+    ? { kind: "gitlab", project: forge.project }
+    : {
+        kind: "github",
+        whyNotGitLab: new ForgeError(
+          "unsupported-forge",
+          `${forge.project.host} resolves to the ${forge.kind} forge, which this tool does not read`
+        ),
+      };
+}
+
+const GH_NO_GITHUB_REMOTE =
+  "none of the git remotes configured for this repository point to a known GitHub host";
+const GH_AUTH_REQUIRED = 4;
+
+export const ghFoundNoRepository = (code: number, firstLine: string): boolean =>
+  code === GH_AUTH_REQUIRED ||
+  code === NOT_INSTALLED ||
+  firstLine.startsWith(GH_NO_GITHUB_REMOTE);
+
+export const neitherForge = (
+  whyNotGitLab: ForgeError,
+  code: number,
+  ghLine: string
+): ForgeError =>
+  new ForgeError(
+    whyNotGitLab.code,
+    `${whyNotGitLab.message} gh could not read the repository either: ${code === NOT_INSTALLED ? "gh is not installed" : ghLine || `gh exited ${code}`}`
+  );
 
 export async function resolveCheckoutForge(
   cwd: string

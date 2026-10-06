@@ -1,0 +1,80 @@
+[
+  {
+    "id": "8325f18d20bddb8b124b5abc745324e9cda00fde",
+    "individual_note": false,
+    "notes": [
+      {
+        "id": 260141,
+        "type": "DiscussionNote",
+        "body": "Please explain why this file exists.",
+        "created_at": "2026-10-06T02:49:10.531+07:00",
+        "system": false,
+        "resolvable": true,
+        "resolved": false,
+        "author": {
+          "username": "user"
+        }
+      }
+    ]
+  },
+  {
+    "id": "1f0ef6a79a627ae2d19b13e2871be8413a61ccc3",
+    "individual_note": false,
+    "notes": [
+      {
+        "id": 260142,
+        "type": "DiffNote",
+        "body": "This line needs a trailing newline check.",
+        "created_at": "2026-10-06T02:49:11.958+07:00",
+        "system": false,
+        "resolvable": true,
+        "resolved": false,
+        "author": {
+          "username": "user"
+        },
+        "position": {
+          "position_type": "text",
+          "new_path": "src/thread-note.txt",
+          "new_line": 1,
+          "old_path": null,
+          "old_line": null
+        }
+      }
+    ]
+  },
+  {
+    "id": "47fcfe8be2a883de460241721b71f67695c72d54",
+    "individual_note": false,
+    "notes": [
+      {
+        "id": 260143,
+        "type": "DiscussionNote",
+        "body": "A thread that gets resolved.",
+        "created_at": "2026-10-06T02:49:13.080+07:00",
+        "system": false,
+        "resolvable": true,
+        "resolved": true,
+        "author": {
+          "username": "user"
+        }
+      }
+    ]
+  },
+  {
+    "id": "b972a3b209b58d5346b0503fc2be5f380b016384",
+    "individual_note": true,
+    "notes": [
+      {
+        "id": 260144,
+        "type": null,
+        "body": "A plain comment, not a thread.",
+        "created_at": "2026-10-06T02:49:14.163+07:00",
+        "system": false,
+        "resolvable": false,
+        "author": {
+          "username": "user"
+        }
+      }
+    ]
+  }
+]

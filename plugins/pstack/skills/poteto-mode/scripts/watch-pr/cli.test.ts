@@ -3,12 +3,12 @@ import { type CliRuntime, main, parseArgs } from "./cli.ts";
 import { WatchDeadline } from "./deadline.ts";
 import { fakeReader, passingCheck } from "./fakes.test-helper.ts";
 import { renderJson, renderPretty } from "./render.ts";
-import type { GitHubReader, WatcherVerdict } from "./types.ts";
+import type { ForgeReader, WatcherVerdict } from "./types.ts";
 import { parsePrNumber } from "./types.ts";
 
 const silentIo = { stdout: () => {}, stderr: () => {} };
 
-function testRuntime(reader: GitHubReader): {
+function testRuntime(reader: ForgeReader): {
   readonly runtime: CliRuntime;
   readonly stdout: string[];
   readonly stderr: string[];

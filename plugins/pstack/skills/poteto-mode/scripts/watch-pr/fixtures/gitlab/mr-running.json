@@ -1,0 +1,31 @@
+{
+  "iid": 3,
+  "title": "Running lane: keep pass-job running",
+  "state": "opened",
+  "draft": false,
+  "sha": "b637c985fc2a4d1974ebe027d85122b64ffc64c6",
+  "source_branch": "lane-running",
+  "target_branch": "main",
+  "detailed_merge_status": "mergeable",
+  "merge_status": "can_be_merged",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/3",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "b30306bc93fdb7f3d2f18812552ce2b081331797",
+    "head_sha": "b637c985fc2a4d1974ebe027d85122b64ffc64c6",
+    "start_sha": "5bc19bc3fde5fa7fcd41456bc571558fdb86d192"
+  },
+  "head_pipeline": {
+    "id": 1765542,
+    "status": "running",
+    "sha": "b637c985fc2a4d1974ebe027d85122b64ffc64c6",
+    "ref": "lane-running",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/group/project/-/pipelines/1765542"
+  }
+}

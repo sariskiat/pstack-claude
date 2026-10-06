@@ -6,13 +6,15 @@
 //
 //   node worktree-audit.mjs [repo-path] [transcripts-path ...]
 //
+// The PR column needs bun on PATH, because it runs forge/list-prs.ts.
+//
 // Without a transcripts path it scans every runtime's transcripts directory
 // that exists: Claude Code's ~/.claude/projects, and Pi's sessions and pstack
 // subagent sessions under $PI_CODING_AGENT_DIR (default ~/.pi/agent).
 //
 // Every probe yields a Fact, { known: true, value } or { known: false }. A hold
 // bucket needs only its own fact; `safe` needs every fact known.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -35,9 +37,7 @@ const bind = (fact, next) => (fact.known ? next(fact.value) : UNKNOWN);
 const DAY = 86400;
 const RECENT_DAYS = 4;
 const HEADER = ["SIZE", "AGE", "MERGED", "DIRTY", "REMOTE", "PR", "LAST_CHAT", "BUCKET", "WORKTREE"];
-// Merged and closed PRs drop out of gh's default open-only listing.
-const GH_PR_LIST = ["pr", "list", "--author", "@me", "--state", "all", "--limit", "1000",
-  "--json", "number,state,headRefName,headRefOid"];
+const LIST_PRS = fileURLToPath(new URL("./forge/list-prs.ts", import.meta.url));
 
 export function classify(facts) {
   const { dirty, pr, recent, ancestry, head } = facts;
@@ -55,8 +55,21 @@ function git(cwd, ...args) {
     .replace(/\n+$/, "");
 }
 
-const runGh = (args, cwd) =>
-  execFileSync("gh", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+export function runListPrs(repo, warn = () => {}) {
+  const result = spawnSync(typeof Bun === "undefined" ? "bun" : process.execPath, [LIST_PRS, repo], {
+    cwd: repo,
+    env: process.env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error?.code === "ENOENT")
+    throw new Error("bun is not on PATH, and the PR column needs it to run forge/list-prs.ts; install bun from https://bun.sh");
+  if (result.error) throw result.error;
+  if (result.status !== 0)
+    throw Object.assign(new Error(result.stderr.trim() || `list-prs exited ${result.status}`), { stderr: result.stderr });
+  for (const line of result.stderr.split("\n")) if (line.trim()) warn(line);
+  return result.stdout;
+}
 
 // `--porcelain -z` output: NUL-separated fields, one record per worktree, the
 // primary worktree first.
@@ -162,7 +175,7 @@ function auditWorktree(path, { repo, trunk, fetched, prs, chats, now }) {
     ancestry.known ? (ancestry.value ? "YES" : "no") : "?",
     dirty.known ? dirtyLabel(dirty.value) : "unknown",
     remote.known ? remote.value : "unknown",
-    pr.known && pr.value ? `#${pr.value.number}/${pr.value.state}` : "-",
+    pr.known && pr.value ? `${pr.value.ref ?? `#${pr.value.number}`}/${pr.value.state}` : "-",
     lastChat.known && lastChat.value !== null ? new Date(lastChat.value * 1000).toISOString().slice(0, 10) : "-",
     bucket,
     path,
@@ -174,7 +187,7 @@ function auditWorktree(path, { repo, trunk, fetched, prs, chats, now }) {
 export function audit({
   repo,
   transcripts,
-  gh = runGh,
+  listPrs = runListPrs,
   warn = (line) => console.error(line),
   now = Math.floor(Date.now() / 1000),
 }) {
@@ -193,10 +206,10 @@ export function audit({
     `could not fetch origin/${trunk}; merged column may be stale`,
   );
   const prs = discover(() => {
-    const list = JSON.parse(gh(GH_PR_LIST, repo));
-    if (!Array.isArray(list)) throw new Error("gh returned JSON that is not an array");
+    const list = JSON.parse(listPrs(repo, warn));
+    if (!Array.isArray(list)) throw new Error("the pull request list is not a JSON array");
     return list;
-  }, "gh pr list failed; PR column will be empty");
+  }, "listing pull requests failed; PR column will be empty");
 
   const worktrees = parseWorktrees(git(repo, "worktree", "list", "--porcelain", "-z")).slice(1);
   const live = worktrees.filter((worktree) => !worktree.prunable).map((worktree) => worktree.path);

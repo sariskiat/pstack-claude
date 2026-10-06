@@ -1,7 +1,27 @@
+import { GITHUB_HOST } from "../forge/forge.ts";
 import { wireReplacer } from "./landing.ts";
 import type * as T from "./types.ts";
 export const renderJson = (verdict: T.WatcherVerdict): string =>
   `${JSON.stringify(verdict, wireReplacer)}\n`;
+export type RenderForge = "github" | "gitlab";
+const WORDING = {
+  github: {
+    retry: "GitHub status query failed",
+    unavailable: "GitHub status remained unavailable",
+    mergeBlocked:
+      "find the branch protection rule holding the merge (mergeStateStatus=BLOCKED with clean CI)",
+    queryAction:
+      "verify current PR context, GitHub authentication, and API availability, then rearm",
+  },
+  gitlab: {
+    retry: "status query failed",
+    unavailable: "status remained unavailable",
+    mergeBlocked:
+      "clear the merge check that detailed_merge_status names (mergeStateStatus=BLOCKED with clean CI)",
+    queryAction:
+      "verify the current merge request, GitLab authentication, and API availability, then rearm",
+  },
+} as const satisfies Record<RenderForge, Record<string, string>>;
 function ciCell(row: T.PrSnapshot): string {
   if (row.kind !== "open") return "\u2014";
   const was = row.ci.hadPreviousPassingCi ? ", was ✅" : "";
@@ -52,7 +72,9 @@ function mergeCell(row: T.PrSnapshot): string {
 export function renderStatusTable(rows: T.NonEmpty<T.PrSnapshot>): string {
   const lines = ["| PR | CI | Review | Merge |", "| --- | --- | --- | --- |"];
   for (const row of rows) {
-    const url = `https://${row.context.host}/${row.context.path}/pull/${row.context.number}`;
+    const review =
+      row.context.host === GITHUB_HOST ? "pull" : "-/merge_requests";
+    const url = `https://${row.context.host}/${row.context.path}/${review}/${row.context.number}`;
     lines.push(
       `| [#${row.context.number}](${url}) | ${ciCell(row)} | ${reviewCell(row)} | ${mergeCell(row)} |`
     );
@@ -74,9 +96,12 @@ function threadLine(thread: T.ReviewThread): string {
 type StatusQueryBlocker = {
   readonly kind: "status-query";
   readonly failures: number;
-  readonly failure: { readonly detail: string };
+  readonly failure: { readonly kind: string; readonly detail: string };
 };
-function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
+function renderBlocker(
+  blocker: T.MergeBlocker | StatusQueryBlocker,
+  forge: RenderForge
+): string {
   switch (blocker.kind) {
     case "merge-conflicts":
       return [
@@ -120,13 +145,16 @@ function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
             : blocker.reason === "review-required"
               ? "get the required approving review"
               : blocker.reason === "merge-blocked"
-                ? "find the branch protection rule holding the merge (mergeStateStatus=BLOCKED with clean CI)"
+                ? WORDING[forge].mergeBlocked
                 : blocker.reason === "changes-requested"
                   ? "resolve the changes-requested review before waiting for the merge queue"
                   : (blocker.reason satisfies never);
       return [
         `BLOCKER: ${blocker.reason}`,
         `pr=${blocker.pr.number}`,
+        ...(blocker.detailedMergeStatus === undefined
+          ? []
+          : [`detailed_merge_status=${blocker.detailedMergeStatus}`]),
         `action=${action}`,
       ].join("\n");
     }
@@ -135,7 +163,9 @@ function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
         "BLOCKER: status-query",
         `failures=${blocker.failures}`,
         `detail=${blocker.failure.detail}`,
-        "action=verify current PR context, GitHub authentication, and API availability, then rearm",
+        blocker.failure.kind === "forge-unavailable"
+          ? "action=fix the problem named in detail, then rearm"
+          : `action=${WORDING[forge].queryAction}`,
       ].join("\n");
     default: {
       const exhaustive: never = blocker;
@@ -143,7 +173,10 @@ function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
     }
   }
 }
-export function renderPretty(verdict: T.WatcherVerdict): string {
+export function renderPretty(
+  verdict: T.WatcherVerdict,
+  forge: RenderForge = "github"
+): string {
   switch (verdict.kind) {
     case "QUEUE":
       return `QUEUE: captured ${verdict.queue.length} PR${verdict.queue.length === 1 ? "" : "s"} bottom-to-top: ${verdict.queue.map((pr) => `#${pr.number}`).join(",")}\n`;
@@ -156,9 +189,9 @@ export function renderPretty(verdict: T.WatcherVerdict): string {
     case "ADVANCE":
       return `ADVANCE: merged #${verdict.merged.number}; next=#${verdict.frontier.number}; remaining=${verdict.remaining}\n`;
     case "RETRY":
-      return `RETRY: GitHub status query failed; retrying in ${verdict.retryInSeconds}s\ndetail=${verdict.failure.detail}\n`;
+      return `RETRY: ${WORDING[forge].retry}; retrying in ${verdict.retryInSeconds}s\ndetail=${verdict.failure.detail}\n`;
     case "BLOCKER":
-      return `${renderBlocker(verdict.blocker)}\n`;
+      return `${renderBlocker(verdict.blocker, forge)}\n`;
     case "READY": {
       const detail =
         verdict.scope.kind === "single" && verdict.scope.pr.kind === "ready-pr"
@@ -172,7 +205,7 @@ export function renderPretty(verdict: T.WatcherVerdict): string {
       if (verdict.reason.kind === "pending-checks")
         return "TIMEOUT: checks still pending\n";
       if (verdict.reason.kind === "status-unavailable")
-        return "TIMEOUT: GitHub status remained unavailable\n";
+        return `TIMEOUT: ${WORDING[forge].unavailable}\n`;
       return `TIMEOUT: queued stack still has ${verdict.reason.unmergedCount} PR${verdict.reason.unmergedCount === 1 ? "" : "s"} unmerged; frontier=#${verdict.reason.frontier.number}\n`;
     default: {
       const exhaustive: never = verdict;

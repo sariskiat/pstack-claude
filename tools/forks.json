@@ -134,19 +134,19 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/cli.test.ts": {
       "kind": "policy",
-      "why": "Supplies the shared deadline and landing revision the port's watcher requires. Uses ProjectRef literals and asserts the owner/repo JSON wire shape.",
+      "why": "Supplies the shared deadline and landing revision the port's watcher requires. Uses ProjectRef literals and asserts the owner/repo JSON wire shape. Names the reader type ForgeReader.",
       "since": "0.9.34",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/cli.ts": {
       "kind": "policy",
-      "why": "Threads one WatchDeadline through discovery, commands, and polling, and reports a deadline verdict instead of throwing.",
+      "why": "Threads one WatchDeadline through discovery, commands, and polling, and reports a deadline verdict instead of throwing. Picks the GitLab reader for a host that glab lists and gh for every other origin, and turns a forge failure such as a glab timeout or a logged-out glab into an exit 7 verdict that names the fix when gh also finds no repository. Words GitLab output without GitHub.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/fakes.test-helper.ts": {
       "kind": "policy",
-      "why": "Extends the fake reader with the revision and review fields the port's watcher reads. Uses ProjectRef literals.",
+      "why": "Extends the fake reader with the revision and review fields the port's watcher reads. Uses ProjectRef literals. Names the reader type ForgeReader.",
       "since": "0.9.10",
       "upstream": "not-proposed"
     },
@@ -158,25 +158,25 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/github.ts": {
       "kind": "policy",
-      "why": "Reads review decision, merge state, and head and base revisions under the shared deadline, and refuses a checkout PR paired with a different explicit repository. Reads and builds every project reference as ProjectRef {host, path}, and splits owner and name only where GitHub GraphQL needs them.",
+      "why": "Reads review decision, merge state, and head and base revisions under the shared deadline, and refuses a checkout PR paired with a different explicit repository. Reads and builds every project reference as ProjectRef {host, path}, and splits owner and name only where GitHub GraphQL needs them. Exports run, the command-exit error, and the shared thread rule for the GitLab reader, and lets a reader name its check source. Accepts only safe positive integers as PR numbers from gh output, and runs gh in the checkout the reader was chosen for.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/policy.test.ts": {
       "kind": "policy",
-      "why": "Covers the review gate and the shared deadline in the poll loop. Uses ProjectRef literals.",
+      "why": "Covers the review gate and the shared deadline in the poll loop. Uses ProjectRef literals. Names the reader type ForgeReader.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/policy.ts": {
       "kind": "policy",
-      "why": "Stops at the review gate, binds readiness to one head and base revision, and honours the shared deadline in the poll loop.",
+      "why": "Stops at the review gate, binds readiness to one head and base revision, and honours the shared deadline in the poll loop. Names the reader type ForgeReader, and copies a GitLab detailed_merge_status from the facts into the merge-gate blocker. No other line differs.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/render.ts": {
       "kind": "policy",
-      "why": "Renders the review-required, merge-blocked, and changes-requested states with their next action. Writes JSON contexts in the owner/repo wire shape and builds the status-table link from host and path.",
+      "why": "Renders the review-required, merge-blocked, and changes-requested states with their next action. Writes JSON contexts in the owner/repo wire shape and builds the status-table link from host and path. Links a non-GitHub row to its merge request page and gives a forge-unavailable failure its own next action. Words the retry, timeout, merge-blocked, and status-query lines per forge, with the GitHub words unchanged, and prints detailed_merge_status for a GitLab merge-gate blocker.",
       "since": "0.9.43",
       "upstream": "not-proposed"
     },
@@ -194,7 +194,7 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/watch-pr/types.ts": {
       "kind": "policy",
-      "why": "Adds the merge gate, landing revision, and deadline failure types the port's watcher reports. Names a project as ProjectRef {host, path} in place of Repository {owner, repo}, so nested GitLab groups fit. The ProjectRef it re-exports comes from forge/forge.ts, whose resolver picks the Origin forge when any executable named origin is on PATH, per the playbook rule that origin wins when its CLI is available, so a stray binary of that name steers it.",
+      "why": "Adds the merge gate, landing revision, and deadline failure types the port's watcher reports. Names a project as ProjectRef {host, path} in place of Repository {owner, repo}, so nested GitLab groups fit. The ProjectRef it re-exports comes from forge/forge.ts, whose resolver picks the Origin forge when any executable named origin is on PATH, per the playbook rule that origin wins when its CLI is available, so a stray binary of that name steers it. Names the reader contract ForgeReader instead of GitHubReader, adds the glab-pipeline-jobs check source and the forge-unavailable query failure. Accepts only safe integers as PR numbers, and carries GitLab's detailed_merge_status on the facts and the merge-gate blocker.",
       "since": "0.9.24",
       "upstream": "not-proposed"
     },

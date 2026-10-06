@@ -1,0 +1,31 @@
+{
+  "iid": 1,
+  "title": "Green lane: change the greeting",
+  "state": "opened",
+  "draft": false,
+  "sha": "269b2a8e077718f8eeefebdb7ede449126591bdf",
+  "source_branch": "lane-green",
+  "target_branch": "main",
+  "detailed_merge_status": "need_rebase",
+  "merge_status": "can_be_merged",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/1",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "b30306bc93fdb7f3d2f18812552ce2b081331797",
+    "head_sha": "269b2a8e077718f8eeefebdb7ede449126591bdf",
+    "start_sha": "b30306bc93fdb7f3d2f18812552ce2b081331797"
+  },
+  "head_pipeline": {
+    "id": 1765526,
+    "status": "success",
+    "sha": "269b2a8e077718f8eeefebdb7ede449126591bdf",
+    "ref": "lane-green",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/group/project/-/pipelines/1765526"
+  }
+}

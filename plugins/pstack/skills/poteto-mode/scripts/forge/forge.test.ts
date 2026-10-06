@@ -3,8 +3,12 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  currentBranch,
+  checkoutForge,
   detectForgeEnv,
   ForgeError,
+  ghFoundNoRepository,
+  GLAB_TIMEOUT_MS,
   ownerAndName,
   parseGlabHosts,
   parseRemoteUrl,
@@ -223,26 +227,26 @@ describe("ownerAndName", () => {
   });
 });
 
-describe("detectForgeEnv glab cost", () => {
-  async function withFakeBins(
-    bins: Record<string, string>,
-    run: (dir: string) => Promise<void>
-  ): Promise<void> {
-    const dir = await mkdtemp(join(tmpdir(), "forge-bins-"));
-    const saved = process.env.PATH;
-    try {
-      for (const [name, body] of Object.entries(bins)) {
-        await writeFile(join(dir, name), `#!/bin/sh\n${body}\n`);
-        await chmod(join(dir, name), 0o755);
-      }
-      process.env.PATH = `${dir}:${saved}`;
-      await run(dir);
-    } finally {
-      process.env.PATH = saved;
-      await rm(dir, { recursive: true, force: true });
+async function withFakeBins(
+  bins: Record<string, string>,
+  run: (dir: string) => Promise<void>
+): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), "forge-bins-"));
+  const saved = process.env.PATH;
+  try {
+    for (const [name, body] of Object.entries(bins)) {
+      await writeFile(join(dir, name), `#!/bin/sh\n${body}\n`);
+      await chmod(join(dir, name), 0o755);
     }
+    process.env.PATH = `${dir}:${saved}`;
+    await run(dir);
+  } finally {
+    process.env.PATH = saved;
+    await rm(dir, { recursive: true, force: true });
   }
+}
 
+describe("detectForgeEnv glab cost", () => {
   const glabRan = (dir: string): Promise<boolean> =>
     readFile(join(dir, "glab-ran")).then(
       () => true,
@@ -277,6 +281,7 @@ describe("detectForgeEnv glab cost", () => {
       const forge = await detectForgeEnv(GITLAB, { glabTimeoutMs: 300 });
       const elapsed = performance.now() - started;
       expect(forge.gitlabHosts).toEqual([]);
+      expect(forge.glabFailure).toEqual({ kind: "timed-out", afterMs: 300 });
       expect(elapsed).toBeGreaterThanOrEqual(250);
       expect(elapsed).toBeLessThan(2000);
     });
@@ -417,5 +422,287 @@ describe("one segment rule and one host rule for remotes", () => {
     );
     expect(path.message).not.toContain("INJECT");
     expect(path.message).not.toContain("\n");
+  });
+});
+
+describe("a glab that does not answer", () => {
+  const REMOTE = "https://gitlab.example.com/group/project.git";
+  const hung = (over: Partial<ForgeEnv> = {}): ForgeEnv => ({
+    gitlabHosts: [],
+    originOnPath: false,
+    glabFailure: { kind: "timed-out", afterMs: 10_000 },
+    ...over,
+  });
+
+  test("resolves to glab-timeout, names the timeout and the VPN, and does not say unknown-host", () => {
+    const error = failure(() => resolveForge(REMOTE, hung()));
+    expect(error.code).toBe("glab-timeout");
+    expect(error.message).toContain("glab did not answer within 10 s");
+    expect(error.message).toContain("VPN");
+    expect(error.message).toContain("gitlab.example.com");
+    expect(error.message).not.toContain("unknown-host");
+    expect(error.message).not.toContain("not listed");
+  });
+
+  test("a host that glab did list still resolves, so a late timeout cannot hide a known host", () => {
+    expect(
+      resolveForge(REMOTE, hung({ gitlabHosts: ["gitlab.example.com"] })).kind
+    ).toBe("gitlab");
+  });
+
+  test("github.com never reports a glab timeout", () => {
+    expect(resolveForge("https://github.com/o/r", hung()).kind).toBe("github");
+  });
+
+  test("a fake glab that hangs gives glab-timeout through detectForgeEnv and resolveForge", async () => {
+    await withFakeBins({ glab: "sleep 5" }, async () => {
+      const forge = await detectForgeEnv("gitlab.example.com", {
+        glabTimeoutMs: 300,
+      });
+      const error = failure(() => resolveForge(REMOTE, forge));
+      expect(error.code).toBe("glab-timeout");
+      expect(error.message).toContain("within 0.3 s");
+    });
+  });
+
+  test("a glab that answers with no hosts is still unknown-host and names glab auth login", async () => {
+    await withFakeBins({ glab: "exit 1" }, async () => {
+      const forge = await detectForgeEnv("gitlab.example.com", {
+        glabTimeoutMs: 5000,
+      });
+      expect(forge.glabFailure).toBeUndefined();
+      const error = failure(() => resolveForge(REMOTE, forge));
+      expect(error.code).toBe("unknown-host");
+      expect(error.message).toContain(
+        "glab auth login --hostname gitlab.example.com"
+      );
+    });
+  });
+});
+
+describe("a glab that is not installed", () => {
+  test("resolves to glab-not-installed and does not ask to log in to glab", async () => {
+    await withFakeBins({}, async (dir) => {
+      process.env.PATH = `${dir}:/usr/bin:/bin`;
+      const forge = await detectForgeEnv("gitlab.example.com");
+      expect(forge.glabFailure).toEqual({ kind: "not-installed" });
+      const error = failure(() =>
+        resolveForge("https://gitlab.example.com/group/project.git", forge)
+      );
+      expect(error.code).toBe("glab-not-installed");
+      expect(error.message).toContain("glab is not installed");
+      expect(error.message).not.toContain("glab auth login");
+    });
+  });
+});
+
+describe("the glab timeout default", () => {
+  test("is at least 5 s", () => {
+    expect(GLAB_TIMEOUT_MS).toBeGreaterThanOrEqual(5000);
+  });
+
+  test("lets a glab that needs 4.8 s list its hosts when no timeout is passed", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "forge-default-"));
+    const saved = process.env.PATH;
+    try {
+      await writeFile(
+        join(dir, "glab"),
+        `#!/bin/sh\n[ "$1" = warm ] && exit 0\nsleep 4.8\nprintf 'gitlab.example.com\\n'\n`
+      );
+      await chmod(join(dir, "glab"), 0o755);
+      await Bun.spawn([join(dir, "glab"), "warm"]).exited;
+      process.env.PATH = `${dir}:${saved}`;
+      const forge = await detectForgeEnv("gitlab.example.com");
+      expect(forge.gitlabHosts).toEqual(["gitlab.example.com"]);
+      expect(forge.glabFailure).toBeUndefined();
+    } finally {
+      process.env.PATH = saved;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("currentBranch", () => {
+  async function repo(run: (dir: string) => Promise<void>): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), "forge-branch-"));
+    try {
+      Bun.spawnSync(["git", "init", "-q", "-b", "feature/x", dir]);
+      Bun.spawnSync([
+        "git",
+        "-C",
+        dir,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "base",
+      ]);
+      await run(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("names the branch, slash included", async () => {
+    await repo(async (dir) => {
+      expect(await currentBranch(dir)).toBe("feature/x");
+    });
+  });
+
+  test("is null on a detached HEAD and outside a repository", async () => {
+    await repo(async (dir) => {
+      Bun.spawnSync(["git", "-C", dir, "checkout", "-q", "--detach"]);
+      expect(await currentBranch(dir)).toBeNull();
+    });
+    const outside = await mkdtemp(join(tmpdir(), "forge-outside-"));
+    try {
+      expect(await currentBranch(outside)).toBeNull();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("checkoutForge", () => {
+  const dirs: string[] = [];
+  const checkout = async (remote: string | null): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), "forge-checkout-"));
+    dirs.push(dir);
+    Bun.spawnSync(["git", "init", "-q", dir]);
+    if (remote !== null)
+      Bun.spawnSync(["git", "-C", dir, "remote", "add", "origin", remote]);
+    return dir;
+  };
+  const cleanup = async (): Promise<void> => {
+    for (const dir of dirs.splice(0))
+      await rm(dir, { recursive: true, force: true });
+  };
+  const GLAB_RAN = 'touch "$(dirname "$0")/glab-ran"';
+  const ran = (dir: string): Promise<boolean> =>
+    readFile(join(dir, "glab-ran")).then(
+      () => true,
+      () => false
+    );
+  const reasonOf = async (remote: string, glabTimeoutMs?: number) => {
+    const forge = await checkoutForge(await checkout(remote), {
+      glabTimeoutMs,
+    });
+    if (forge.kind !== "github") throw new Error("expected gh");
+    return forge.whyNotGitLab?.code;
+  };
+
+  test("a github.com origin, no origin, and an unreadable origin go to gh with no other reason and never run glab", async () => {
+    await withFakeBins({ glab: GLAB_RAN }, async (bin) => {
+      try {
+        for (const remote of [
+          "git@github.com:o/r.git",
+          null,
+          "/srv/git/local.git",
+        ])
+          expect(await checkoutForge(await checkout(remote))).toEqual({
+            kind: "github",
+            whyNotGitLab: null,
+          });
+        expect(await ran(bin)).toBe(false);
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+
+  test("a host that glab lists gives its project with every group segment", async () => {
+    await withFakeBins({ glab: "printf 'gitlab.example.com\\n'" }, async () => {
+      try {
+        expect(
+          await checkoutForge(
+            await checkout("git@gitlab.example.com:platform/tools/app.git")
+          )
+        ).toEqual({
+          kind: "gitlab",
+          project: { host: "gitlab.example.com", path: "platform/tools/app" },
+        });
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+
+  test("an SSH host alias and ssh.github.com go to gh as before GitLab support, keeping why they are not GitLab", async () => {
+    await withFakeBins({ glab: "printf 'gitlab.example.com\\n'" }, async () => {
+      try {
+        for (const remote of [
+          "git@github.com-work:o/r.git",
+          "ssh://git@ssh.github.com:443/o/r.git",
+        ])
+          expect(await reasonOf(remote)).toBe("unknown-host");
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+
+  test("a host that glab does not list keeps unknown-host, and a hung glab keeps glab-timeout, for when gh fails too", async () => {
+    const remote = "https://gitlab.example.com/g/p.git";
+    await withFakeBins({ glab: "printf 'gitlab.com\\n'" }, async () => {
+      try {
+        expect(await reasonOf(remote)).toBe("unknown-host");
+      } finally {
+        await cleanup();
+      }
+    });
+    await withFakeBins({ glab: "sleep 5" }, async () => {
+      try {
+        expect(await reasonOf(remote, 300)).toBe("glab-timeout");
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+
+  test("an origin CLI on PATH keeps unsupported-forge for a non-GitHub host and leaves a GitHub host alone", async () => {
+    await withFakeBins({ origin: "exit 0", glab: GLAB_RAN }, async (bin) => {
+      try {
+        expect(await reasonOf("https://gitlab.example.com/g/p.git")).toBe(
+          "unsupported-forge"
+        );
+        expect(
+          await checkoutForge(await checkout("https://github.com/o/r"))
+        ).toEqual({ kind: "github", whyNotGitLab: null });
+        expect(await ran(bin)).toBe(false);
+      } finally {
+        await cleanup();
+      }
+    });
+  });
+});
+
+describe("ghFoundNoRepository", () => {
+  test("is true when gh knows no GitHub remote, has no login, or is not installed", () => {
+    expect(
+      ghFoundNoRepository(
+        1,
+        "none of the git remotes configured for this repository point to a known GitHub host. To tell gh about a new GitHub host, please use `gh auth login`"
+      )
+    ).toBe(true);
+    expect(
+      ghFoundNoRepository(
+        4,
+        "To get started with GitHub CLI, please run:  gh auth login"
+      )
+    ).toBe(true);
+    expect(ghFoundNoRepository(127, "gh is not installed")).toBe(true);
+  });
+
+  test("is false once gh found the repository and failed on the pull request", () => {
+    for (const line of [
+      'no pull requests found for branch "topic"',
+      "GraphQL: Could not resolve to a PullRequest with the number of 99. (repository.pullRequest)",
+      "error connecting to api.github.com",
+    ])
+      expect(ghFoundNoRepository(1, line)).toBe(false);
   });
 });

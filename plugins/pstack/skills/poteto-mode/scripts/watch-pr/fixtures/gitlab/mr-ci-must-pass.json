@@ -1,0 +1,31 @@
+{
+  "iid": 2,
+  "title": "Red lane: make fail-job fail",
+  "state": "opened",
+  "draft": false,
+  "sha": "5f66644fbb64570c56997652db2a8f7c7e62d8d7",
+  "source_branch": "lane-red",
+  "target_branch": "main",
+  "detailed_merge_status": "ci_must_pass",
+  "merge_status": "can_be_merged",
+  "has_conflicts": false,
+  "blocking_discussions_resolved": true,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/2",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "b30306bc93fdb7f3d2f18812552ce2b081331797",
+    "head_sha": "5f66644fbb64570c56997652db2a8f7c7e62d8d7",
+    "start_sha": "b30306bc93fdb7f3d2f18812552ce2b081331797"
+  },
+  "head_pipeline": {
+    "id": 1765528,
+    "status": "failed",
+    "sha": "5f66644fbb64570c56997652db2a8f7c7e62d8d7",
+    "ref": "lane-red",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/group/project/-/pipelines/1765528"
+  }
+}

@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { audit, classify, defaultTranscriptRoots } from "../plugins/pstack/skills/poteto-mode/scripts/worktree-audit.mjs";
+import { audit, classify, defaultTranscriptRoots, runListPrs } from "../plugins/pstack/skills/poteto-mode/scripts/worktree-audit.mjs";
 
 const script = join(import.meta.dir, "../plugins/pstack/skills/poteto-mode/scripts/worktree-audit.mjs");
 
@@ -104,15 +104,15 @@ function writeTranscript(fixture, rel, worktree, mtimeSeconds) {
   if (mtimeSeconds) utimesSync(path, mtimeSeconds, mtimeSeconds);
 }
 
-function runAudit(fixture, { prs = [], gh, transcripts = [fixture.transcripts] } = {}) {
+function runAudit(fixture, { prs = [], listPrs, transcripts = [fixture.transcripts] } = {}) {
   const warnings = [];
   const calls = [];
   const output = audit({
     repo: fixture.repo,
     transcripts,
     warn: (line) => warnings.push(line),
-    gh: gh ?? ((args, cwd) => {
-      calls.push({ args, cwd });
+    listPrs: listPrs ?? ((repo) => {
+      calls.push({ repo });
       return JSON.stringify(prs);
     }),
   });
@@ -163,8 +163,7 @@ test("audits every worktree of a fixture repo end to end", () => {
 
   expect(header).toBe("SIZE\tAGE\tMERGED\tDIRTY\tREMOTE\tPR\tLAST_CHAT\tBUCKET\tWORKTREE");
   expect(warnings).toEqual([]);
-  expect(calls).toHaveLength(1);
-  expect(calls[0].args.join(" ")).toContain("--state all");
+  expect(calls).toEqual([{ repo: fixture.repo }]);
   expect(rows[0].at(-1)).toBe(merged);
   const today = ymd(now);
   const columns = (worktree) => rowFor(rows, worktree).slice(1);
@@ -230,9 +229,9 @@ describe("a discovery failure keeps an ancestor out of safe", () => {
       git("-C", fixture.repo, "remote", "set-url", "origin", join(fixture.root, "missing.git"));
       return {};
     }, /could not fetch origin\/main/],
-    ["gh", () => ({ gh: () => { throw new Error("gh: not logged in"); } }), /gh pr list failed.*not logged in/],
-    ["gh output that is not JSON", () => ({ gh: () => "rate limited" }), /gh pr list failed/],
-    ["gh output that is not a list", () => ({ gh: () => "{}" }), /gh pr list failed/],
+    ["the pull request listing", () => ({ listPrs: () => { throw new Error("gh: not logged in"); } }), /listing pull requests failed.*not logged in/],
+    ["listing output that is not JSON", () => ({ listPrs: () => "rate limited" }), /listing pull requests failed/],
+    ["listing output that is not a list", () => ({ listPrs: () => "{}" }), /listing pull requests failed/],
     ["a missing transcripts directory", (fixture) => ({ transcripts: [fixture.transcripts, join(fixture.root, "absent")] }), /^warn: \S+\/absent not found; LAST_CHAT column will be empty$/],
     ["an unreadable transcripts directory", (fixture) => {
       const project = join(fixture.transcripts, "-proj");
@@ -306,4 +305,121 @@ test("the CLI exits 1 outside a git repo", () => {
   const result = spawnSync("node", [script, outside, outside], { encoding: "utf8" });
   expect(result.status).toBe(1);
   expect(result.stderr).toBe("not in a git repo; pass a repo path\n");
+});
+
+test("under node without bun on PATH the audit still prints and warns that bun is missing", () => {
+  const fixture = createFixture();
+  const bin = join(fixture.root, "node-only-bin");
+  mkdirSync(bin);
+  symlinkSync(spawnSync("sh", ["-c", "command -v node"], { encoding: "utf8" }).stdout.trim(), join(bin, "node"));
+  const result = spawnSync("node", [script, fixture.repo, fixture.transcripts], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` },
+  });
+  expect(result.status).toBe(0);
+  expect(result.stderr).toContain(
+    "warn: listing pull requests failed; PR column will be empty: bun is not on PATH, and the PR column needs it to run forge/list-prs.ts",
+  );
+});
+
+describe("a merge request from GitLab", () => {
+  test("shows its iid with a bang and its state, and holds an open one", () => {
+    const fixture = createFixture();
+    const open = addWorktree(fixture, "open");
+    const merged = addWorktree(fixture, "merged");
+    commit(merged, "squash merged");
+    git("-C", merged, "push", "origin", "merged");
+    const { rows, warnings } = runAudit(fixture, {
+      prs: [
+        { number: 7, state: "OPEN", headRefName: "open", headRefOid: head(open), ref: "!7" },
+        { number: 8, state: "MERGED", headRefName: "merged", headRefOid: head(merged), ref: "!8" },
+      ],
+    });
+    expect(warnings).toEqual([]);
+    expect(rowFor(rows, open).slice(5, 8)).toEqual(["!7/OPEN", "-", "hold-open-pr"]);
+    expect(rowFor(rows, merged).slice(5, 8)).toEqual(["!8/MERGED", "-", "safe"]);
+  });
+});
+
+describe("the default pull request listing goes through the forge adapter", () => {
+  function withBins(scripts, run) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "worktree-audit-bins-")));
+    fixtures.push(root);
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    for (const [name, body] of Object.entries(scripts)) {
+      writeFileSync(join(bin, name), `#!${process.execPath}\nconst args = process.argv.slice(2);\n${body}\n`);
+      chmodSync(join(bin, name), 0o755);
+    }
+    const saved = process.env.PATH;
+    process.env.PATH = `${bin}:${saved}`;
+    try {
+      return run(root);
+    } finally {
+      process.env.PATH = saved;
+    }
+  }
+  const checkout = (root, remote) => {
+    const repo = join(root, "repo");
+    git("init", "-q", repo);
+    git("-C", repo, "remote", "add", "origin", remote);
+    return repo;
+  };
+  const sha = "a".repeat(40);
+
+  test("a GitHub checkout lists with gh and keeps the number sign", () => {
+    withBins(
+      { gh: `console.log(JSON.stringify([{ number: 7, state: "OPEN", headRefName: "open", headRefOid: "${sha}" }]));` },
+      (root) => {
+        const listed = JSON.parse(runListPrs(checkout(root, "https://github.com/o/r.git")));
+        expect(listed).toEqual([{ number: 7, state: "OPEN", headRefName: "open", headRefOid: sha }]);
+      },
+    );
+  });
+
+  test("a GitLab checkout lists merge requests with glab and names them with a bang", () => {
+    withBins(
+      {
+        glab: `if (args[0] === "auth") { console.log("gitlab.example.com"); process.exit(0); }
+console.log(JSON.stringify(args[3].includes("page=1") ? [{ iid: 3, state: "merged", source_branch: "b", sha: "${sha}" }] : []));`,
+      },
+      (root) => {
+        const listed = JSON.parse(runListPrs(checkout(root, "https://gitlab.example.com/group/project.git")));
+        expect(listed).toEqual([{ number: 3, state: "MERGED", headRefName: "b", headRefOid: sha, ref: "!3" }]);
+      },
+    );
+  });
+
+  test("a GitLab list with a bad record keeps the rest and hands the warning to the audit", () => {
+    withBins(
+      {
+        glab: `if (args[0] === "auth") { console.log("gitlab.example.com"); process.exit(0); }
+console.log(JSON.stringify(args[3].includes("page=1") ? [{ iid: 3, state: "opened", source_branch: "a", sha: null }, { iid: 4, state: "merged", source_branch: "b", sha: null }] : []));`,
+      },
+      (root) => {
+        const warnings = [];
+        const listed = JSON.parse(runListPrs(checkout(root, "https://gitlab.example.com/group/project.git"), (line) => warnings.push(line)));
+        expect(listed).toEqual([{ number: 4, state: "MERGED", headRefName: "b", headRefOid: null, ref: "!4" }]);
+        expect(warnings).toEqual(["warn: skipped merge request !3, which is not in the expected shape"]);
+      },
+    );
+  });
+
+  test("the audit passes its warn to the listing", () => {
+    const fixture = createFixture();
+    const { warnings } = runAudit(fixture, {
+      listPrs: (repo, warn) => {
+        warn("warn: skipped merge request !9, which is not in the expected shape");
+        return "[]";
+      },
+    });
+    expect(warnings).toEqual(["warn: skipped merge request !9, which is not in the expected shape"]);
+  });
+
+  test("a forge it cannot resolve fails with the ForgeError code in the message", () => {
+    const noGitHubRemote = "none of the git remotes configured for this repository point to a known GitHub host";
+    withBins({ glab: `console.log("gitlab.com");`, gh: `console.error("${noGitHubRemote}"); process.exit(1);` }, (root) => {
+      expect(() => runListPrs(checkout(root, "https://git.example.net/g/p.git"))).toThrow(/unknown-host/);
+    });
+  });
 });

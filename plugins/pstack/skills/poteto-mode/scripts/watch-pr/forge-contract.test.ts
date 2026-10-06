@@ -272,7 +272,7 @@ describe("renderStatusTable builds the link from the row's host and path", () =>
       number,
     };
     expect(renderStatusTable([closed(nested)])).toContain(
-      "[#42](https://gitlab.example.com/g/sub/p/pull/42)"
+      "[#42](https://gitlab.example.com/g/sub/p/-/merge_requests/42)"
     );
   });
 });

@@ -1,0 +1,31 @@
+{
+  "iid": 11,
+  "title": "No commits sample",
+  "state": "opened",
+  "draft": false,
+  "sha": "fe5dfef22d4546ef7d6be0f600c2a11ced0e9f9d",
+  "source_branch": "no-commits",
+  "target_branch": "main",
+  "detailed_merge_status": "commits_status",
+  "merge_status": "cannot_be_merged",
+  "has_conflicts": true,
+  "blocking_discussions_resolved": true,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "web_url": "https://gitlab.example.com/group/project/-/merge_requests/11",
+  "source_project_id": 42,
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "fe5dfef22d4546ef7d6be0f600c2a11ced0e9f9d",
+    "head_sha": "fe5dfef22d4546ef7d6be0f600c2a11ced0e9f9d",
+    "start_sha": "fe5dfef22d4546ef7d6be0f600c2a11ced0e9f9d"
+  },
+  "head_pipeline": {
+    "id": 1765544,
+    "status": "success",
+    "sha": "fe5dfef22d4546ef7d6be0f600c2a11ced0e9f9d",
+    "ref": "no-commits",
+    "source": "push",
+    "web_url": "https://gitlab.example.com/group/project/-/pipelines/1765544"
+  }
+}

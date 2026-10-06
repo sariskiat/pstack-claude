@@ -7,10 +7,12 @@ export type NonEmpty<T> = readonly [T, ...T[]];
 export function nonEmpty<T>(items: readonly T[]): NonEmpty<T> | null {
   return items.length === 0 ? null : [items[0], ...items.slice(1)];
 }
+export const isPrNumber = (value: unknown): value is PrNumber =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 export function parsePrNumber(value: unknown, label = "PR number"): PrNumber {
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0)
+  if (!isPrNumber(value))
     throw new Error(`${label} must be a positive integer`);
-  return value as PrNumber;
+  return value;
 }
 export interface PrContext extends ProjectRef {
   readonly number: PrNumber;
@@ -49,6 +51,7 @@ interface PullRequestFields {
   readonly state: "OPEN" | "CLOSED" | "MERGED";
   readonly mergedAt: string | null;
   readonly isDraft: boolean;
+  readonly detailedMergeStatus?: string;
 }
 export type PullRequestFacts = PullRequestFields &
   (
@@ -95,7 +98,7 @@ export type FailedCheck = Extract<Check, { readonly kind: "failed" }>;
 export type PendingCheck = Extract<Check, { readonly kind: "pending" }>;
 export interface ReportedChecks {
   readonly kind: "reported";
-  readonly source: "gh-pr-checks" | "graphql-rollup";
+  readonly source: "gh-pr-checks" | "graphql-rollup" | "glab-pipeline-jobs";
   readonly checks: NonEmpty<Check>;
 }
 /** `resolveChecks` owns what counts as `no-checks`. */
@@ -227,6 +230,7 @@ export type MergeBlocker =
       readonly kind: "merge-gate";
       readonly pr: PrContext;
       readonly reason: MergeGateReason;
+      readonly detailedMergeStatus?: string;
     };
 export type QueryFailure =
   | {
@@ -266,6 +270,12 @@ export type QueryFailure =
       readonly retryable: false;
       readonly detail: string;
       readonly rawValue: string;
+    }
+  | {
+      readonly kind: "forge-unavailable";
+      readonly retryable: false;
+      readonly code: string;
+      readonly detail: string;
     };
 /**
  * `frontier` names the lowest unmerged PR that is actually waiting, and
@@ -407,7 +417,11 @@ export type QueueTerminalVerdict =
   | BlockerVerdict
   | TimeoutVerdict;
 export type ChecksFastPath =
-  | { readonly kind: "checks"; readonly checks: readonly Check[] }
+  | {
+      readonly kind: "checks";
+      readonly checks: readonly Check[];
+      readonly source?: ReportedChecks["source"];
+    }
   | { readonly kind: "none-reported" }
   | {
       readonly kind: "unusable";
@@ -421,7 +435,7 @@ export type RollupPage =
       readonly endCursor: string | null;
     }
   | { readonly kind: "no-rollup" };
-export interface GitHubReader {
+export interface ForgeReader {
   originRepo(): Promise<ProjectRef | null>;
   currentPr(pr: PrNumber | null): Promise<PrContext>;
   pullRequest(context: PrContext): Promise<PullRequestFacts>;
