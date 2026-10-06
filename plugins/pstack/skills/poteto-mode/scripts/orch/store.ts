@@ -13,6 +13,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import {
+  NotFoundError,
+  UsageError,
+  UserError,
+  type NotFoundOutput,
+} from "./errors.ts";
 
 const UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief";
 const LEDGER_HEADER = "pr\tsha\tverdict\tevidence\tverifier\tts";
@@ -220,21 +226,8 @@ export interface Store {
   readonly close: () => Promise<void>;
 }
 
-export interface NotFoundOutput {
-  readonly compact: string;
-  readonly json: unknown;
-}
-
-export class UserError extends Error {}
-export class UsageError extends UserError {}
-export class NotFoundError extends UserError {
-  public constructor(
-    message: string,
-    public readonly output?: NotFoundOutput
-  ) {
-    super(message);
-  }
-}
+export { NotFoundError, UsageError, UserError };
+export type { NotFoundOutput };
 
 function errorCode(error: unknown): string | null {
   if (
