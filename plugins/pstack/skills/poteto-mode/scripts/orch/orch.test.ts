@@ -1,17 +1,20 @@
 import { afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import {
-  chmod,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
-  rename,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
-import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DeadlineExceeded } from "../watch-pr/deadline.ts";
+import { parsePullRequest } from "../watch-pr/github.ts";
+import type { ForgeReader, ProjectRef } from "../watch-pr/types.ts";
+import { parsePrNumber } from "../watch-pr/types.ts";
+import type { ForgeFactory } from "./frontier.ts";
 import type { StackRow } from "./stack.ts";
 import {
   NotFoundError,
@@ -54,7 +57,7 @@ async function initializedStore(): Promise<{
   readonly store: Store;
 }> {
   const directory = await makeDirectory();
-  const store = useStore(directory, { gt: fakeGtPath(directory) });
+  const store = useStore(directory);
   await store.init();
   return { directory, store };
 }
@@ -106,56 +109,6 @@ async function makeGitStack(directory: string): Promise<{
   };
 }
 
-function fakeGtPath(directory: string): string {
-  return join(directory, "bin", "gt");
-}
-
-async function withFakeGt<T>({
-  directory,
-  operation,
-  output,
-}: {
-  directory: string;
-  operation: (outputPath: string) => Promise<T>;
-  output: string;
-}): Promise<T> {
-  const bin = join(directory, "bin");
-  const outputPath = join(directory, "gt-output.txt");
-  await mkdir(bin);
-  await writeFile(outputPath, output);
-  const gt = fakeGtPath(directory);
-  await writeFile(
-    gt,
-    `#!/usr/bin/env bash
-set -euo pipefail
-if [ "$(pwd -P)" != "${realpathSync(join(directory, "repo"))}" ]; then
-  printf 'gt ran outside the fixture repo: %s\\n' "$(pwd -P)" >&2
-  exit 2
-fi
-case "$*" in
-  "--no-interactive log short --stack --reverse")
-    cat "${outputPath}"
-    ;;
-  "--no-interactive info stack/merged")
-    printf 'stack/merged\\nPR #10 (Merged) merged change\\n'
-    ;;
-  "--no-interactive info stack/closed")
-    printf 'stack/closed\\nPR #13 (Closed) closed change\\n'
-    ;;
-  "--no-interactive info stack/open")
-    printf 'stack/open\\nPR #11 (Needs approvals) open change\\n'
-    ;;
-  *)
-    printf 'unexpected gt arguments: %s\\n' "$*" >&2
-    exit 2
-    ;;
-esac
-`
-  );
-  await chmod(gt, 0o755);
-  return operation(outputPath);
-}
-
 function runCli(
   args: readonly string[],
   env?: Readonly<Record<string, string | undefined>>
@@ -173,6 +126,72 @@ const plain = (row: StackRow): Record<string, string> => ({
   parent: String(row.parent),
   parentTip: String(row.parentTip),
 });
+
+interface FakePr {
+  readonly number: number;
+  readonly head: string;
+  base: string;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  fork?: boolean;
+}
+
+const PROJECT: ProjectRef = { host: "gitlab.example.com", path: "group/project" };
+const FORK: ProjectRef = { host: "gitlab.example.com", path: "user/project" };
+
+/** A reader that answers only the three calls orch is allowed to make, and logs them. */
+function fakeForge(
+  prs: readonly FakePr[],
+  calls: string[] = [],
+  origin: ProjectRef | null = PROJECT
+): ForgeFactory {
+  const refused = (name: string) => async (): Promise<never> => {
+    throw new Error(`orch must not call ${name}`);
+  };
+  const reader: ForgeReader = {
+    originRepo: async () => {
+      calls.push("originRepo");
+      return origin;
+    },
+    openPullRequests: async () => {
+      calls.push("openPullRequests");
+      return prs
+        .filter((pr) => pr.state === "OPEN")
+        .map((pr) => ({
+          number: parsePrNumber(pr.number),
+          headRepository: pr.fork === true ? FORK : PROJECT,
+          headRefName: pr.head,
+          baseRefName: pr.base,
+        }));
+    },
+    pullRequest: async (context) => {
+      calls.push(`pullRequest #${context.number}`);
+      const pr = prs.find((item) => item.number === context.number);
+      if (pr === undefined) throw new Error(`no pull request #${context.number}`);
+      return parsePullRequest(
+        {
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "CLEAN",
+          reviewDecision: null,
+          headRefOid: "a".repeat(40),
+          baseRefOid: "b".repeat(40),
+          headRefName: pr.head,
+          baseRefName: pr.base,
+          state: pr.state,
+          mergedAt: pr.state === "MERGED" ? "2026-01-01T00:00:00Z" : null,
+          isDraft: false,
+        },
+        context
+      );
+    },
+    currentPr: refused("currentPr"),
+    revision: refused("revision"),
+    checksFastPath: refused("checksFastPath"),
+    checkRollupPage: refused("checkRollupPage"),
+    reviewThreads: refused("reviewThreads"),
+    commitRollups: refused("commitRollups"),
+  };
+  return async () => reader;
+}
 
 async function asActor<T>(
   directory: string,
@@ -206,6 +225,74 @@ async function stackFixture(): Promise<{
     ...stack,
     mainSha: git({ repo: stack.repo, args: ["rev-parse", "main"] }),
   };
+}
+
+/** One store handle holds the lock, so a test that changes what the forge says swaps the reader behind it. */
+function swappable(initial: ForgeFactory): {
+  readonly forge: ForgeFactory;
+  readonly use: (next: ForgeFactory) => void;
+} {
+  let current = initial;
+  return {
+    forge: (repo) => current(repo),
+    use: (next) => {
+      current = next;
+    },
+  };
+}
+
+/** Runs with a PATH that holds only git, a shell, and the given scripts. */
+async function withFakeBin<T>(
+  directory: string,
+  scripts: Readonly<Record<string, string>>,
+  run: (bin: string) => Promise<T>
+): Promise<T> {
+  const bin = join(directory, "fake-bin");
+  await mkdir(bin);
+  for (const tool of ["git", "bash", "sh", "cat", "dirname"]) {
+    const found = Bun.which(tool);
+    if (found === null) throw new Error(`${tool} is not on PATH`);
+    await symlink(found, join(bin, tool));
+  }
+  for (const [name, body] of Object.entries(scripts)) {
+    await writeFile(join(bin, name), `#!/usr/bin/env bash\n${body}\n`, {
+      mode: 0o755,
+    });
+  }
+  const original = process.env.PATH;
+  process.env.PATH = bin;
+  try {
+    return await run(bin);
+  } finally {
+    process.env.PATH = original;
+  }
+}
+
+async function stackThree(
+  fixture: Awaited<ReturnType<typeof stackFixture>>
+): Promise<void> {
+  const { directory, repo } = fixture;
+  await asActor(directory, "stacker-1", async (store) => {
+    await store.stack.add({ repo, branch: "stack/merged", parent: "main" });
+    await store.stack.add({
+      repo,
+      branch: "stack/closed",
+      parent: "stack/merged",
+    });
+    await store.stack.add({
+      repo,
+      branch: "stack/open",
+      parent: "stack/closed",
+    });
+  });
+}
+
+function threePrs(): FakePr[] {
+  return [
+    { number: 10, head: "stack/merged", base: "main", state: "OPEN" },
+    { number: 13, head: "stack/closed", base: "stack/merged", state: "OPEN" },
+    { number: 11, head: "stack/open", base: "stack/closed", state: "OPEN" },
+  ];
 }
 
 afterEach(async () => {
@@ -442,112 +529,6 @@ describe("Store", () => {
     expect(await store.standing.show()).toEqual([
       { number: 1, line: "Never force push." },
     ]);
-  });
-
-  it("resolves the ordered Graphite frontier and validates an optional pin", async () => {
-    const { directory, store } = await initializedStore();
-    const stack = await makeGitStack(directory);
-    const output = `◯ main
-◯ stack/merged
-◯ stack/closed
-◉ stack/open (current)
-`;
-
-    await withFakeGt({
-      directory,
-      output,
-      operation: async () => {
-        expect(await store.frontier.set({ repo: stack.repo })).toEqual({
-          generation: 1,
-          prs: [
-            {
-              pr: 10,
-              branches: "stack/merged",
-              sha: stack.mergedSha,
-              state: "MERGED",
-            },
-            {
-              pr: 13,
-              branches: "stack/closed",
-              sha: stack.closedSha,
-              state: "CLOSED",
-            },
-            {
-              pr: 11,
-              branches: "stack/open",
-              sha: stack.openSha,
-              state: "OPEN",
-            },
-          ],
-          lowestUnmerged: 11,
-        });
-        expect(
-          (
-            await store.frontier.set({
-              repo: stack.repo,
-              prs: [10, 13, 11],
-            })
-          ).generation
-        ).toBe(2);
-        expect((await store.frontier.show()).generation).toBe(2);
-        await expect(
-          store.frontier.set({
-            repo: stack.repo,
-            prs: [10, 11, 12],
-          })
-        ).rejects.toThrow(
-          "frontier pin mismatch: missing from gt: 12; extra in gt: 13"
-        );
-        await expect(
-          store.frontier.set({
-            repo: stack.repo,
-            prs: [13, 10, 11],
-          })
-        ).rejects.toThrow(
-          "frontier pin mismatch: order differs: expected 13,10,11; gt 10,13,11"
-        );
-        await expect(
-          store.frontier.set({
-            repo: stack.repo,
-            prs: [10, 10],
-          })
-        ).rejects.toThrow("--prs must not contain duplicates");
-      },
-    });
-  });
-
-  it("rejects unparseable Graphite output loudly", async () => {
-    const { directory, store } = await initializedStore();
-    const stack = await makeGitStack(directory);
-
-    await withFakeGt({
-      directory,
-      output: "◯ main\nthis line is not Graphite output\n",
-      operation: async () => {
-        await expect(
-          store.frontier.set({ repo: stack.repo })
-        ).rejects.toThrow(
-          'gt log short output has an unparseable line 2: "this line is not Graphite output"'
-        );
-      },
-    });
-  });
-
-  it("parses Graphite output that carries colour codes", async () => {
-    const { directory, store } = await initializedStore();
-    const stack = await makeGitStack(directory);
-
-    await withFakeGt({
-      directory,
-      output: "\u001b[2m◯ main\u001b[0m\n\u001b[32m◉ stack/open\u001b[39m \u001b[2m(current)\u001b[22m\n",
-      operation: async () => {
-        expect(
-          (await store.frontier.set({ repo: stack.repo })).prs
-        ).toEqual([
-          { pr: 11, branches: "stack/open", sha: stack.openSha, state: "OPEN" },
-        ]);
-      },
-    });
   });
 
   it("rejects malformed TSV, verdict, frontier, and inbox data", async () => {
@@ -800,6 +781,289 @@ stack/open\tstack/closed\t${closedSha}
   });
 });
 
+describe("frontier", () => {
+  it("orders the frontier by stack.tsv and takes each state from the forge reader", async () => {
+    const fixture = await stackFixture();
+    const { directory, repo, mergedSha, closedSha, openSha } = fixture;
+    await stackThree(fixture);
+    const prs = threePrs();
+    const calls: string[] = [];
+    const store = useStore(directory, { forge: fakeForge(prs, calls) });
+
+    expect(await store.frontier.set({ repo })).toEqual({
+      generation: 1,
+      prs: [
+        { pr: 10, branches: "stack/merged", sha: mergedSha, state: "OPEN" },
+        { pr: 13, branches: "stack/closed", sha: closedSha, state: "OPEN" },
+        { pr: 11, branches: "stack/open", sha: openSha, state: "OPEN" },
+      ],
+      lowestUnmerged: 10,
+    });
+    expect(calls).toEqual(["originRepo", "openPullRequests"]);
+
+    prs[0].state = "MERGED";
+    prs[1].state = "CLOSED";
+    calls.length = 0;
+    expect(await store.frontier.set({ repo })).toEqual({
+      generation: 2,
+      prs: [
+        { pr: 10, branches: "stack/merged", sha: mergedSha, state: "MERGED" },
+        { pr: 13, branches: "stack/closed", sha: closedSha, state: "CLOSED" },
+        { pr: 11, branches: "stack/open", sha: openSha, state: "OPEN" },
+      ],
+      lowestUnmerged: 11,
+    });
+    expect(calls).toEqual([
+      "originRepo",
+      "openPullRequests",
+      "pullRequest #10",
+      "pullRequest #13",
+    ]);
+    expect((await store.frontier.show()).generation).toBe(2);
+  });
+
+  it("validates an optional pin against the stack", async () => {
+    const fixture = await stackFixture();
+    await stackThree(fixture);
+    const store = useStore(fixture.directory, {
+      forge: fakeForge(threePrs()),
+    });
+    const { repo } = fixture;
+
+    expect(
+      (await store.frontier.set({ repo, prs: [10, 13, 11] })).generation
+    ).toBe(1);
+    await expect(
+      store.frontier.set({ repo, prs: [10, 11, 12] })
+    ).rejects.toThrow(
+      "frontier pin mismatch: missing from the stack: 12; extra in the stack: 13"
+    );
+    await expect(
+      store.frontier.set({ repo, prs: [13, 10, 11] })
+    ).rejects.toThrow(
+      "frontier pin mismatch: order differs: expected 13,10,11; stack 10,13,11"
+    );
+    await expect(store.frontier.set({ repo, prs: [10, 10] })).rejects.toThrow(
+      "--prs must not contain duplicates"
+    );
+    expect((await store.frontier.show()).generation).toBe(1);
+  });
+
+  it("reports drift between stack.tsv and the forge targets and writes nothing", async () => {
+    const fixture = await stackFixture();
+    await stackThree(fixture);
+    const { directory, repo } = fixture;
+    const prs = threePrs();
+    const store = useStore(directory, { forge: fakeForge(prs) });
+    await store.frontier.set({ repo });
+    const before = await readFile(join(directory, "frontier.json"), "utf8");
+
+    prs[1].base = "main";
+    await expect(store.frontier.set({ repo })).rejects.toThrow(
+      "frontier drift: stack/closed (#13) targets main, but stack.tsv has its parent as stack/merged"
+    );
+    expect(await readFile(join(directory, "frontier.json"), "utf8")).toBe(
+      before
+    );
+  });
+
+  it("accepts the target a forge gives a child when its parent has merged", async () => {
+    const fixture = await stackFixture();
+    await stackThree(fixture);
+    const { directory, repo } = fixture;
+    const prs = threePrs();
+    const store = useStore(directory, { forge: fakeForge(prs) });
+    await store.frontier.set({ repo });
+
+    prs[0].state = "MERGED";
+    prs[1].base = "main";
+    const frontier = await store.frontier.set({ repo });
+    expect(frontier.prs.map((row) => row.state)).toEqual([
+      "MERGED",
+      "OPEN",
+      "OPEN",
+    ]);
+    expect(frontier.lowestUnmerged).toBe(13);
+  });
+
+  it("refuses a branch whose pull request is not open and not remembered", async () => {
+    const fixture = await stackFixture();
+    await stackThree(fixture);
+    const { directory, repo } = fixture;
+    const store = useStore(directory, {
+      forge: fakeForge(threePrs().slice(1)),
+    });
+
+    await expect(store.frontier.set({ repo })).rejects.toThrow(
+      "branch stack/merged has no open pull request, and the last frontier does not know its number"
+    );
+    expect((await store.frontier.show()).generation).toBe(0);
+  });
+
+  it("ignores a pull request from a fork that has the same head branch", async () => {
+    const fixture = await stackFixture();
+    await stackThree(fixture);
+    const prs = threePrs();
+    prs[0].fork = true;
+    const store = useStore(fixture.directory, { forge: fakeForge(prs) });
+
+    await expect(store.frontier.set({ repo: fixture.repo })).rejects.toThrow(
+      "branch stack/merged has no open pull request"
+    );
+  });
+
+  it("refuses two open pull requests for one branch and a remembered number for another branch", async () => {
+    const fixture = await stackFixture();
+    await stackThree(fixture);
+    const { directory, repo } = fixture;
+    const twice = [
+      ...threePrs(),
+      { number: 12, head: "stack/open", base: "main", state: "OPEN" as const },
+    ];
+    const reader = swappable(fakeForge(twice));
+    const store = useStore(directory, { forge: reader.forge });
+    await expect(store.frontier.set({ repo })).rejects.toThrow(
+      "2 open pull requests have the head branch stack/open: #11, #12"
+    );
+
+    reader.use(fakeForge(threePrs()));
+    await store.frontier.set({ repo });
+    reader.use(
+      fakeForge(
+        threePrs().map((pr) =>
+          pr.number === 10
+            ? { ...pr, state: "MERGED" as const, head: "other/branch" }
+            : pr
+        )
+      )
+    );
+    await expect(store.frontier.set({ repo })).rejects.toThrow(
+      "pull request #10 has the head branch other/branch, not stack/merged"
+    );
+  });
+
+  it("names the failure when the forge cannot be read", async () => {
+    const fixture = await stackFixture();
+    await stackThree(fixture);
+    const { directory, repo } = fixture;
+    const failing =
+      (error: unknown): ForgeFactory =>
+      async () => {
+        throw error;
+      };
+    const reader = swappable(failing(new Error("glab did not answer")));
+    const store = useStore(directory, { forge: reader.forge });
+
+    await expect(store.frontier.set({ repo })).rejects.toThrow(
+      "the forge read failed: glab did not answer"
+    );
+    reader.use(failing(new DeadlineExceeded()));
+    await expect(store.frontier.set({ repo })).rejects.toThrow(
+      "the network or the VPN is the likely cause"
+    );
+    reader.use(fakeForge([], [], null));
+    await expect(store.frontier.set({ repo })).rejects.toThrow(
+      "the repository has no origin remote"
+    );
+  });
+
+  it("reads a GitHub checkout through gh with only git and gh on PATH", async () => {
+    const fixture = await stackFixture();
+    await stackThree(fixture);
+    const { directory, repo, mergedSha, closedSha, openSha } = fixture;
+    git({
+      repo,
+      args: ["remote", "add", "origin", "https://github.com/user/project.git"],
+    });
+    const remembered = [
+      { pr: 10, branches: "stack/merged", sha: mergedSha, state: "OPEN" },
+      { pr: 13, branches: "stack/closed", sha: closedSha, state: "OPEN" },
+      { pr: 11, branches: "stack/open", sha: openSha, state: "OPEN" },
+    ];
+    await writeFile(
+      join(directory, "frontier.json"),
+      JSON.stringify({ generation: 1, prs: remembered, lowestUnmerged: 10 })
+    );
+    const view = (head: string, base: string, state: string) =>
+      JSON.stringify({
+        mergeable: "UNKNOWN",
+        mergeStateStatus: "UNKNOWN",
+        reviewDecision: "",
+        headRefOid: "a".repeat(40),
+        baseRefOid: "b".repeat(40),
+        headRefName: head,
+        baseRefName: base,
+        state,
+        mergedAt: state === "MERGED" ? "2026-01-01T00:00:00Z" : null,
+        isDraft: false,
+      });
+    const listed = JSON.stringify([
+      {
+        number: 11,
+        headRefName: "stack/open",
+        baseRefName: "stack/closed",
+        headRepository: { name: "project" },
+        headRepositoryOwner: { login: "user" },
+      },
+    ]);
+    const gh = `case "$1 $2" in
+  "pr list") cat "$(dirname "$0")/list.json" ;;
+  "pr view") cat "$(dirname "$0")/view-$3.json" ;;
+  *) echo "unexpected gh $*" >&2; exit 2 ;;
+esac`;
+
+    const frontier = await withFakeBin(
+      directory,
+      { gh },
+      async (bin) => {
+        await writeFile(join(bin, "list.json"), listed);
+        await writeFile(
+          join(bin, "view-10.json"),
+          view("stack/merged", "main", "MERGED")
+        );
+        await writeFile(
+          join(bin, "view-13.json"),
+          view("stack/closed", "stack/merged", "CLOSED")
+        );
+        return useStore(directory).frontier.set({ repo });
+      }
+    );
+
+    expect(frontier.prs.map((row) => [row.pr, row.state])).toEqual([
+      [10, "MERGED"],
+      [13, "CLOSED"],
+      [11, "OPEN"],
+    ]);
+    expect(frontier.lowestUnmerged).toBe(11);
+  });
+
+  it("explains a host that neither gh nor glab serves", async () => {
+    const fixture = await stackFixture();
+    await stackThree(fixture);
+    const { directory, repo } = fixture;
+    git({
+      repo,
+      args: ["remote", "add", "origin", "https://unknown.example.org/g/p.git"],
+    });
+
+    await withFakeBin(directory, { glab: "exit 0" }, async () => {
+      await expect(useStore(directory).frontier.set({ repo })).rejects.toThrow(
+        "host unknown.example.org"
+      );
+    });
+  });
+
+  it("writes an empty frontier for an empty stack", async () => {
+    const { directory, repo } = await stackFixture();
+    const store = useStore(directory, { forge: fakeForge([]) });
+    expect(await store.frontier.set({ repo })).toEqual({
+      generation: 1,
+      prs: [],
+      lowestUnmerged: null,
+    });
+  });
+});
+
 describe("orch CLI", () => {
   it("prints commander help and rejects invalid parsing with exit 1", async () => {
     const help = runCli(["--help"]);
@@ -897,49 +1161,6 @@ describe("orch CLI", () => {
 });
 
 describe("port guards", () => {
-  it("rejects a parenthesized gt PR status instead of treating it as open", async () => {
-    const { directory, store } = await initializedStore();
-    const stack = await makeGitStack(directory);
-
-    await withFakeGt({
-      directory,
-      output: "◯ main\n◉ stack/paren\n",
-      operation: async () => {
-        const gt = fakeGtPath(directory);
-        await rename(gt, `${gt}-base`);
-        await writeFile(
-          gt,
-          `#!/usr/bin/env bash
-if [ "$*" = "--no-interactive info stack/paren" ]; then
-  printf 'stack/paren\\nPR #14 (Needs approvals (2)) tricky change\\n'
-else
-  exec "${gt}-base" "$@"
-fi
-`,
-          { mode: 0o755 }
-        );
-        await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
-          "gt info output has an invalid PR row for branch stack/paren"
-        );
-      },
-    });
-  });
-
-  it("rejects a leading-dash branch name in gt log output", async () => {
-    const { directory, store } = await initializedStore();
-    const stack = await makeGitStack(directory);
-
-    await withFakeGt({
-      directory,
-      output: "◯ main\n◉ --upload-pack=/tmp/pwn\n",
-      operation: async () => {
-        await expect(store.frontier.set({ repo: stack.repo })).rejects.toThrow(
-          "gt log short output has an unparseable line 2"
-        );
-      },
-    });
-  });
-
   it("keeps status.md table cells single-line when frontier data carries control characters", async () => {
     const { directory, store } = await initializedStore();
 
