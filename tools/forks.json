@@ -80,7 +80,7 @@
     },
     "plugins/pstack/skills/poteto-mode/playbooks/orchestrate.md": {
       "kind": "port-feature",
-      "why": "Runs workers as background subagents in per-writer worktrees under a ~/.claude/orchestrate store because Claude Code has no cloud worker environment, and keeps human rulings in their original wording.",
+      "why": "Runs workers as background subagents in per-writer worktrees under a ~/.claude/orchestrate store because Claude Code has no cloud worker environment, and keeps human rulings in their original wording. Names orch stack and orch restack, with stack.tsv as the stack order, in place of Graphite.",
       "since": "0.9.29",
       "upstream": "not-proposed"
     },
@@ -116,19 +116,19 @@
     },
     "plugins/pstack/skills/poteto-mode/scripts/orch/orch.test.ts": {
       "kind": "policy",
-      "why": "Covers the guards the port adds to orch/store.ts. Sets a 30 s default test timeout because the Graphite fixture tests spawn git and gt dozens of times and run past 5 s under CPU load. Also covers stack.tsv, the stacker guard, and orch stack.",
+      "why": "Covers the guards the port adds to orch/store.ts, stack.tsv, the stacker guard, the frontier read through the forge reader, and orch restack after a squash merge, a merge commit, a conflict, and a crash. Sets a 30 s default test timeout because the fixture tests spawn git dozens of times and run past 5 s under CPU load.",
       "since": "0.9.47",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/orch/orch.ts": {
       "kind": "policy",
-      "why": "Adds orch stack add, show, and drop, which write stack.tsv for the stacker named in the standing orders, and the --as caller identity.",
+      "why": "Adds orch stack add, show, and drop, orch restack, and the --as caller identity, which replace the Graphite stack that the frontier read with stack.tsv and the forge reader.",
       "since": "0.9.67",
       "upstream": "not-proposed"
     },
     "plugins/pstack/skills/poteto-mode/scripts/orch/store.ts": {
       "kind": "policy",
-      "why": "Adds four guards: temp-file cleanup that cannot mask the write error, single-line status table cells, rejection of nested-paren gt status rows, and rejection of leading-dash branch names. Also adds stack.tsv to the store with stack add, show, and drop for the stacker named in the standing orders, and takes its error classes from errors.ts.",
+      "why": "Adds two guards: temp-file cleanup that cannot mask the write error and single-line status table cells. Reads the frontier order from stack.tsv and the pull request states from the forge reader in place of Graphite, adds the stack and restack operations for the stacker named in the standing orders, and takes its error classes from errors.ts.",
       "since": "0.9.13",
       "upstream": "not-proposed"
     },
