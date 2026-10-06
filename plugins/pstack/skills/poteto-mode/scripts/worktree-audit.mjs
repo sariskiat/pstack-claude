@@ -6,8 +6,7 @@
 //
 //   node worktree-audit.mjs [repo-path] [transcripts-path ...]
 //
-// The PR column runs forge/list-prs.ts, a TypeScript file, so bun must be on
-// PATH even when node runs this script.
+// The PR column needs bun on PATH, because it runs forge/list-prs.ts.
 //
 // Without a transcripts path it scans every runtime's transcripts directory
 // that exists: Claude Code's ~/.claude/projects, and Pi's sessions and pstack
@@ -56,7 +55,6 @@ function git(cwd, ...args) {
     .replace(/\n+$/, "");
 }
 
-// list-prs writes a warning line to stderr for each record it skips; they go to the audit's warnings.
 export function runListPrs(repo, warn = () => {}) {
   const result = spawnSync(typeof Bun === "undefined" ? "bun" : process.execPath, [LIST_PRS, repo], {
     cwd: repo,

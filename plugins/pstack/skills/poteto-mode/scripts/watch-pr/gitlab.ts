@@ -304,7 +304,6 @@ export function approvalSignal(
   return approvals.approved ? "approved" : "none";
 }
 
-/** `targetTip` is the target branch's head commit, which GitHub's baseRefOid matches; diff_refs only moves when the source branch does. */
 export function pullRequestFacts(
   mr: MergeRequest,
   approvals: Approvals,
@@ -452,7 +451,7 @@ function pipelineCheck(
   };
 }
 
-/** The jobs endpoint lists neither trigger jobs nor external commit statuses, and a config error has no job, so the pipeline status fills in what the list misses. */
+/** The jobs endpoint lists neither trigger jobs nor external commit statuses, and a config error has no job. */
 export function checksForPipeline(
   jobs: readonly Job[],
   pipeline: HeadPipeline
@@ -534,7 +533,6 @@ function glabFailure(
   );
 }
 
-/** A merge request from a fork names a branch of another project. */
 const fromTargetProject = (mr: Record<string, unknown>): boolean =>
   positiveInteger(mr.source_project_id, "merge request.source_project_id") ===
   positiveInteger(mr.target_project_id, "merge request.target_project_id");
@@ -709,7 +707,7 @@ export class GlabReader implements T.ForgeReader {
     );
   }
 
-  /** GitLab links a new pipeline to the merge request in a background job, so for a while the head pipeline reads null although it exists. */
+  /** GitLab links a new pipeline to the merge request in a background job. */
   private async refuseUnlinkedHeadPipeline(
     context: T.PrContext,
     mr: OpenMergeRequest

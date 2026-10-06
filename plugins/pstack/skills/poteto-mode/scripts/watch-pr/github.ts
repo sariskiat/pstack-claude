@@ -62,11 +62,13 @@ export const commandExit = (
   });
 export function run(
   argv: readonly [string, ...string[]],
-  deadline: WatchDeadline
+  deadline: WatchDeadline,
+  cwd?: string
 ): Promise<CommandResult> {
   if (deadline.remaining() === 0) return Promise.reject(new DeadlineExceeded());
   return new Promise((resolve, reject) => {
     const child = spawn(argv[0], argv.slice(1), {
+      cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -119,9 +121,10 @@ function parseJson(text: string, label: string): unknown {
 }
 export async function runJson(
   argv: readonly [string, ...string[]],
-  deadline: WatchDeadline
+  deadline: WatchDeadline,
+  cwd?: string
 ): Promise<unknown> {
-  const result = await run(argv, deadline);
+  const result = await run(argv, deadline, cwd);
   if (result.code !== 0) throw commandExit(result, argv.join(" "));
   return parseJson(result.stdout, argv.join(" "));
 }
@@ -163,7 +166,6 @@ function at(value: unknown, path: readonly string[]): unknown {
   }
   return current;
 }
-/** The one check for a PR or merge request number read from gh or glab output. */
 export const prNumberField = (value: unknown, path: string): T.PrNumber =>
   isPrNumber(value) ? value : missing(path, value);
 function string(value: unknown, path: string): string {
@@ -532,12 +534,15 @@ function graphqlArgs(
 }
 
 export class GhGitHubReader implements T.ForgeReader {
-  constructor(private readonly deadline: WatchDeadline) {}
+  constructor(
+    private readonly deadline: WatchDeadline,
+    private readonly cwd?: string
+  ) {}
   private run(argv: readonly [string, ...string[]]): Promise<CommandResult> {
-    return run(argv, this.deadline);
+    return run(argv, this.deadline, this.cwd);
   }
   private runJson(argv: readonly [string, ...string[]]): Promise<unknown> {
-    return runJson(argv, this.deadline);
+    return runJson(argv, this.deadline, this.cwd);
   }
   async originRepo(): Promise<T.ProjectRef | null> {
     const result = await this.run(["git", "remote", "get-url", "origin"]);

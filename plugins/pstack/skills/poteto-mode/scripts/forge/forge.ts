@@ -13,7 +13,6 @@ export type GlabFailure =
 export interface ForgeEnv {
   readonly gitlabHosts: readonly string[];
   readonly originOnPath: boolean;
-  /** Why glab listed no hosts. Absent when glab answered. */
   readonly glabFailure?: GlabFailure;
 }
 
@@ -278,10 +277,9 @@ export async function currentBranch(cwd: string): Promise<string | null> {
   return result.code === 0 && branch !== "" ? branch : null;
 }
 
-/** A host glab lists is read through glab. Every other checkout goes to gh, as before GitLab support; `ifGhFails` keeps why the host is not GitLab, for when gh cannot find the repository either. */
 export type CheckoutForge =
   | { readonly kind: "gitlab"; readonly project: ProjectRef }
-  | { readonly kind: "github"; readonly ifGhFails: ForgeError | null };
+  | { readonly kind: "github"; readonly whyNotGitLab: ForgeError | null };
 
 export async function checkoutForge(
   cwd: string,
@@ -297,23 +295,23 @@ export async function checkoutForge(
       error instanceof ForgeError &&
       (error.code === "no-origin-remote" || error.code === "unparseable-remote")
     )
-      return { kind: "github", ifGhFails: null };
+      return { kind: "github", whyNotGitLab: null };
     throw error;
   }
-  if (host === GITHUB_HOST) return { kind: "github", ifGhFails: null };
+  if (host === GITHUB_HOST) return { kind: "github", whyNotGitLab: null };
   let forge: ResolvedForge;
   try {
     forge = resolveForge(remote, await detectForgeEnv(host, options));
   } catch (error) {
     if (error instanceof ForgeError)
-      return { kind: "github", ifGhFails: error };
+      return { kind: "github", whyNotGitLab: error };
     throw error;
   }
   return forge.kind === "gitlab"
     ? { kind: "gitlab", project: forge.project }
     : {
         kind: "github",
-        ifGhFails: new ForgeError(
+        whyNotGitLab: new ForgeError(
           "unsupported-forge",
           `${forge.project.host} resolves to the ${forge.kind} forge, which this tool does not read`
         ),
@@ -324,7 +322,6 @@ const GH_NO_GITHUB_REMOTE =
   "none of the git remotes configured for this repository point to a known GitHub host";
 const GH_AUTH_REQUIRED = 4;
 
-/** True when gh stopped before it found a GitHub repository: no remote it knows, no login, or no gh at all. */
 export const ghFoundNoRepository = (code: number, firstLine: string): boolean =>
   code === GH_AUTH_REQUIRED ||
   code === NOT_INSTALLED ||

@@ -175,7 +175,7 @@ const isLookup = (reader: CliRuntime["reader"]): reader is ForgeLookup =>
   "checkout" in reader;
 export interface ReaderChoice {
   readonly reader: T.ForgeReader;
-  readonly ifGhFails: ForgeError | null;
+  readonly whyNotGitLab: ForgeError | null;
 }
 export async function selectReader(
   options: Pick<CliOptions, "owner" | "repo">,
@@ -183,7 +183,10 @@ export async function selectReader(
   lookup: ForgeLookup
 ): Promise<ReaderChoice> {
   if (options.owner !== null && options.repo !== null)
-    return { reader: new GhGitHubReader(deadline), ifGhFails: null };
+    return {
+      reader: new GhGitHubReader(deadline, lookup.checkout),
+      whyNotGitLab: null,
+    };
   const forge = await checkoutForge(lookup.checkout, {
     glabTimeoutMs: lookup.glabTimeoutMs,
   });
@@ -192,9 +195,12 @@ export async function selectReader(
         reader: new GlabReader(forge.project, deadline, {
           cwd: lookup.checkout,
         }),
-        ifGhFails: null,
+        whyNotGitLab: null,
       }
-    : { reader: new GhGitHubReader(deadline), ifGhFails: forge.ifGhFails };
+    : {
+        reader: new GhGitHubReader(deadline, lookup.checkout),
+        whyNotGitLab: forge.whyNotGitLab,
+      };
 }
 function ghFailure(
   error: unknown
@@ -235,11 +241,11 @@ async function seedContext(
   } catch (error) {
     const gh = ghFailure(error);
     if (
-      choice.ifGhFails !== null &&
+      choice.whyNotGitLab !== null &&
       gh !== null &&
       ghFoundNoRepository(gh.code, gh.line)
     )
-      throw neitherForge(choice.ifGhFails, gh.code, gh.line);
+      throw neitherForge(choice.whyNotGitLab, gh.code, gh.line);
     throw error;
   }
 }
@@ -287,7 +293,7 @@ export async function main(
   try {
     const choice = isLookup(runtime.reader)
       ? await selectReader(options, runtime.deadline, runtime.reader)
-      : { reader: runtime.reader, ifGhFails: null };
+      : { reader: runtime.reader, whyNotGitLab: null };
     reader = choice.reader;
     forge = reader instanceof GlabReader ? "gitlab" : "github";
     const seed = await seedContext(choice, forge, options);

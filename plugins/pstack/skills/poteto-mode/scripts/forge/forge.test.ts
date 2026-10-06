@@ -592,7 +592,7 @@ describe("checkoutForge", () => {
       glabTimeoutMs,
     });
     if (forge.kind !== "github") throw new Error("expected gh");
-    return forge.ifGhFails?.code;
+    return forge.whyNotGitLab?.code;
   };
 
   test("a github.com origin, no origin, and an unreadable origin go to gh with no other reason and never run glab", async () => {
@@ -605,7 +605,7 @@ describe("checkoutForge", () => {
         ])
           expect(await checkoutForge(await checkout(remote))).toEqual({
             kind: "github",
-            ifGhFails: null,
+            whyNotGitLab: null,
           });
         expect(await ran(bin)).toBe(false);
       } finally {
@@ -671,7 +671,7 @@ describe("checkoutForge", () => {
         );
         expect(
           await checkoutForge(await checkout("https://github.com/o/r"))
-        ).toEqual({ kind: "github", ifGhFails: null });
+        ).toEqual({ kind: "github", whyNotGitLab: null });
         expect(await ran(bin)).toBe(false);
       } finally {
         await cleanup();

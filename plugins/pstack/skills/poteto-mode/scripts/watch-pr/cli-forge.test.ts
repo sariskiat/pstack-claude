@@ -66,21 +66,6 @@ async function inSandbox(
   }
 }
 
-/** The gh reader runs git and gh in the process directory, which is the checkout outside tests. */
-async function mainIn(
-  dir: string,
-  argv: readonly string[],
-  runtime: CliRuntime
-): Promise<number> {
-  const saved = process.cwd();
-  process.chdir(dir);
-  try {
-    return await main(argv, runtime);
-  } finally {
-    process.chdir(saved);
-  }
-}
-
 const MARKER = 'touch "$(dirname "$0")/../glab-ran"';
 const glabRan = (sandbox: Sandbox) =>
   existsSync(join(sandbox.root, "glab-ran"));
@@ -97,7 +82,7 @@ describe("selectReader keeps the gh reader for everything GitHub did before", ()
         checkout: join(sandbox.root, "not-a-checkout"),
       });
       expect(choice.reader).toBeInstanceOf(GhGitHubReader);
-      expect(choice.ifGhFails).toBeNull();
+      expect(choice.whyNotGitLab).toBeNull();
     });
   });
 
@@ -145,8 +130,8 @@ describe("selectReader keeps the gh reader for everything GitHub did before", ()
           glabTimeoutMs,
         });
         expect(choice.reader).toBeInstanceOf(GhGitHubReader);
-        expect(choice.ifGhFails?.code).toBe(code);
-        expect(choice.ifGhFails?.message).toContain(HOST);
+        expect(choice.whyNotGitLab?.code).toBe(code);
+        expect(choice.whyNotGitLab?.message).toContain(HOST);
         expect(glabRan(sandbox)).toBe(false);
       });
   });
@@ -207,7 +192,7 @@ esac`;
       await inSandbox({ glab: `printf '${HOST}\\n'`, gh }, async (sandbox) => {
         const dir = sandbox.checkout(remote);
         const harness = runtimeFor({ checkout: dir });
-        expect(await mainIn(dir, ["--pr", "1"], harness.runtime)).toBe(6);
+        expect(await main(["--pr", "1"], harness.runtime)).toBe(6);
         expect(JSON.parse(harness.stdout.join(""))).toMatchObject({
           blocker: {
             kind: "merge-gate",
@@ -252,7 +237,7 @@ describe("watch-pr on a GitLab checkout", () => {
       async (sandbox) => {
         const dir = sandbox.checkout(REMOTE);
         const harness = runtimeFor({ checkout: dir, glabTimeoutMs: 300 });
-        expect(await mainIn(dir, ["--pr", "1"], harness.runtime)).toBe(7);
+        expect(await main(["--pr", "1"], harness.runtime)).toBe(7);
         const verdict = JSON.parse(harness.stdout.join(""));
         expect(verdict).toMatchObject({
           kind: "BLOCKER",
@@ -282,9 +267,7 @@ describe("watch-pr on a GitLab checkout", () => {
       async (sandbox) => {
         const dir = sandbox.checkout(REMOTE);
         const harness = runtimeFor({ checkout: dir });
-        expect(
-          await mainIn(dir, ["--pr", "1", "--pretty"], harness.runtime)
-        ).toBe(7);
+        expect(await main(["--pr", "1", "--pretty"], harness.runtime)).toBe(7);
         const text = harness.stdout.join("");
         expect(text).toContain("BLOCKER: status-query");
         expect(text).toContain(`glab auth login --hostname ${HOST}`);
@@ -307,7 +290,7 @@ describe("watch-pr on a GitLab checkout", () => {
       async (sandbox) => {
         const dir = sandbox.checkout(REMOTE);
         const harness = runtimeFor({ checkout: dir });
-        expect(await mainIn(dir, ["--pr", "1"], harness.runtime)).toBe(7);
+        expect(await main(["--pr", "1"], harness.runtime)).toBe(7);
         const { failure } = JSON.parse(harness.stdout.join("")).blocker;
         expect(failure.code).toBe("unknown-host");
         expect(failure.detail).toContain(`glab auth login --hostname ${HOST}`);
@@ -318,7 +301,7 @@ describe("watch-pr on a GitLab checkout", () => {
       process.env.PATH = `${sandbox.bin}:/usr/bin:/bin`;
       const dir = sandbox.checkout(REMOTE);
       const harness = runtimeFor({ checkout: dir });
-      expect(await mainIn(dir, ["--pr", "1"], harness.runtime)).toBe(7);
+      expect(await main(["--pr", "1"], harness.runtime)).toBe(7);
       const { failure } = JSON.parse(harness.stdout.join("")).blocker;
       expect(failure.code).toBe("unknown-host");
       expect(failure.detail).toContain(
@@ -332,7 +315,7 @@ describe("watch-pr on a GitLab checkout", () => {
       process.env.PATH = `${sandbox.bin}:/usr/bin:/bin`;
       const dir = sandbox.checkout(REMOTE);
       const harness = runtimeFor({ checkout: dir });
-      expect(await mainIn(dir, ["--pr", "1"], harness.runtime)).toBe(7);
+      expect(await main(["--pr", "1"], harness.runtime)).toBe(7);
       const { failure } = JSON.parse(harness.stdout.join("")).blocker;
       expect(failure.code).toBe("glab-not-installed");
       expect(failure.detail).toContain("glab is not installed");

@@ -63,7 +63,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** A merged or closed merge request may have lost its sha, as the single merge request read in watch-pr allows. */
 function parseMergeRequest(
   value: unknown
 ): ListedPr | { readonly skipped: string } {
@@ -146,8 +145,8 @@ export async function listOwnPullRequests(
   const result = await capture(GITHUB_LIST, LIST_TIMEOUT_MS, cwd);
   if (result.code !== 0) {
     const line = firstLine(result.stderr);
-    if (forge.ifGhFails !== null && ghFoundNoRepository(result.code, line))
-      throw neitherForge(forge.ifGhFails, result.code, line);
+    if (forge.whyNotGitLab !== null && ghFoundNoRepository(result.code, line))
+      throw neitherForge(forge.whyNotGitLab, result.code, line);
     failed(result, "gh pr list");
   }
   return JSON.parse(result.stdout) as readonly ListedPr[];
