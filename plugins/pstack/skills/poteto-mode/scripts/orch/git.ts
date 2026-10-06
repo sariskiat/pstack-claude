@@ -1,55 +1,66 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { UserError } from "./errors.ts";
 import { parseCommitSha, type BranchName, type CommitSha } from "./stack.ts";
 
-function failure(args: readonly string[], error: unknown): UserError {
-  const stderr =
-    error !== null && typeof error === "object" && "stderr" in error
-      ? String(error.stderr)
-      : "";
-  const detail =
-    stderr.trim().split("\n")[0] ||
-    (error instanceof Error ? error.message : String(error));
+export interface GitRun {
+  readonly status: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/** Runs git in a repository and reports the exit status instead of throwing on it. */
+export function gitRun(
+  repo: string,
+  args: readonly string[],
+  env: Readonly<Record<string, string>> = {}
+): GitRun {
+  const result = spawnSync("git", ["-C", repo, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error !== undefined) {
+    throw new UserError(
+      `git ${args.join(" ")} did not run: ${result.error.message}`
+    );
+  }
+  return {
+    status: result.status ?? -1,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
+}
+
+export function failure(args: readonly string[], run: GitRun): UserError {
+  const detail = run.stderr.trim().split("\n")[0] || `exit ${run.status}`;
   return new UserError(`git ${args.join(" ")} failed: ${detail}`);
 }
 
-export function git(repo: string, args: readonly string[]): string {
-  try {
-    return execFileSync("git", ["-C", repo, ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-  } catch (error) {
-    throw failure(args, error);
-  }
+export function git(
+  repo: string,
+  args: readonly string[],
+  env?: Readonly<Record<string, string>>
+): string {
+  const run = gitRun(repo, args, env);
+  if (run.status !== 0) throw failure(args, run);
+  return run.stdout.trim();
 }
 
 /** Exit 0 is true, exit 1 is false, and anything else is a failed command. */
 export function gitTest(repo: string, args: readonly string[]): boolean {
-  try {
-    execFileSync("git", ["-C", repo, ...args], {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    return true;
-  } catch (error) {
-    if (
-      error !== null &&
-      typeof error === "object" &&
-      "status" in error &&
-      error.status === 1
-    ) {
-      return false;
-    }
-    throw failure(args, error);
-  }
+  const run = gitRun(repo, args);
+  if (run.status === 0) return true;
+  if (run.status === 1) return false;
+  throw failure(args, run);
 }
 
 /** The commit a ref names, or null when the ref does not exist. */
 export function commitOf(repo: string, ref: string): CommitSha | null {
   const args = ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`];
-  return gitTest(repo, args)
-    ? parseCommitSha(git(repo, args), `commit of ${ref}`)
-    : null;
+  const run = gitRun(repo, args);
+  if (run.status === 1) return null;
+  if (run.status !== 0) throw failure(args, run);
+  return parseCommitSha(run.stdout.trim(), `commit of ${ref}`);
 }
 
 export function branchTip(repo: string, branch: BranchName): CommitSha {
