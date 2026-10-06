@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -738,5 +740,99 @@ describe("the host of a merge request must be one glab is logged in to", () => {
           ok({})
         )
     ).toThrow(ForgeError);
+  });
+});
+
+describe("the live merge script writes only to a sandbox project", () => {
+  const script = join(import.meta.dir, "live-merge-safety-gitlab.mjs");
+  function runScript(args: string[], glabBody: string) {
+    const dir = mkdtempSync(join(tmpdir(), "live-gitlab-"));
+    try {
+      const log = join(dir, "calls.log");
+      writeFileSync(
+        join(dir, "glab"),
+        `#!/bin/sh\necho "$*" >> "${log}"\n${glabBody}\n`
+      );
+      chmodSync(join(dir, "glab"), 0o755);
+      const result = spawnSync(process.execPath, [script, ...args], {
+        encoding: "utf8",
+        timeout: 10000,
+        env: { PATH: `${dir}:${process.env.PATH}` },
+      });
+      let calls: string[] = [];
+      try {
+        calls = readFileSync(log, "utf8").trim().split("\n");
+      } catch {
+        calls = [];
+      }
+      return { status: result.status, stderr: result.stderr, calls };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  const good = [
+    "--live-sandbox",
+    "--host",
+    HOST,
+    "--project",
+    "group/pstack-sandbox",
+  ];
+
+  it("refuses a project that is not named pstack-sandbox, before any call", () => {
+    const result = runScript(
+      ["--live-sandbox", "--host", HOST, "--project", PROJECT],
+      "exit 9"
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("only a project named pstack-sandbox");
+    expect(result.calls).toEqual([]);
+  });
+
+  it("refuses missing flags, a bad host, and a bad project path, before any call", () => {
+    for (const args of [
+      [],
+      ["--host", HOST, "--project", "group/pstack-sandbox"],
+      ["--dry-run", "--host", HOST, "--project", "group/pstack-sandbox"],
+      [
+        "--live-sandbox",
+        "--host",
+        "-bad.example.com",
+        "--project",
+        "group/pstack-sandbox",
+      ],
+      ["--live-sandbox", "--host", HOST, "--project", "../pstack-sandbox"],
+    ]) {
+      const result = runScript(args, "exit 9");
+      expect(result.status).toBe(2);
+      expect(result.calls).toEqual([]);
+    }
+  });
+
+  it("deletes only what it created, so a failed first write deletes nothing", () => {
+    const sandbox = JSON.stringify({
+      path_with_namespace: "group/pstack-sandbox",
+      archived: false,
+      default_branch: "main",
+    });
+    const result = runScript(
+      good,
+      `case "$*" in *--method*) echo "glab: 500 boom (HTTP 500)" >&2; exit 1;; esac\necho '${sandbox}'`
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.calls).toHaveLength(2);
+    expect(result.calls[1]).toContain("--method POST");
+    expect(result.calls.join("\n")).not.toContain("DELETE");
+  });
+
+  it("starts with one read and writes nothing when the server names another project", () => {
+    const other = JSON.stringify({
+      path_with_namespace: "other/pstack-sandbox",
+      archived: false,
+      default_branch: "main",
+    });
+    const result = runScript(good, `echo '${other}'`);
+    expect(result.status).not.toBe(0);
+    expect(result.calls).toHaveLength(1);
+    expect(result.calls[0]).not.toContain("--method");
   });
 });
