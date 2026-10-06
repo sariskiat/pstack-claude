@@ -19,6 +19,23 @@ import {
   UserError,
   type NotFoundOutput,
 } from "./errors.ts";
+import {
+  branchOrOriginTip,
+  branchTip,
+  isAncestor,
+  mergeBase,
+} from "./git.ts";
+import {
+  STACK_HEADER,
+  appendRow,
+  dropRow,
+  parseBranchName,
+  parseCommitSha,
+  parseStack,
+  stackCells,
+  type CommitSha,
+  type StackRow,
+} from "./stack.ts";
 
 const UNIT_HEADER = "id\ttrack\tstate\tbranch\tpr\tsha\tbrief";
 const LEDGER_HEADER = "pr\tsha\tverdict\tevidence\tverifier\tts";
@@ -176,11 +193,23 @@ export interface SetFrontierParams {
   readonly prs?: readonly number[];
 }
 
+export interface AddStackParams {
+  readonly repo: string;
+  readonly branch: string;
+  readonly parent: string;
+  readonly parentTip?: string;
+}
+
+export interface DropStackParams {
+  readonly branch: string;
+}
+
 export interface AddStandingParams {
   readonly line: string;
 }
 
 export interface OpenStoreOptions {
+  readonly actor?: string;
   readonly force?: boolean;
   readonly gt?: string;
   readonly onLockStolen?: (holder: string) => void;
@@ -214,6 +243,11 @@ export interface Store {
   readonly frontier: {
     readonly set: (params: SetFrontierParams) => Promise<Frontier>;
     readonly show: () => Promise<Frontier>;
+  };
+  readonly stack: {
+    readonly add: (params: AddStackParams) => Promise<StackRow>;
+    readonly show: () => Promise<readonly StackRow[]>;
+    readonly drop: (params: DropStackParams) => Promise<StackRow>;
   };
   readonly standing: {
     readonly show: () => Promise<readonly StandingLine[]>;
@@ -741,6 +775,51 @@ async function readStanding(
     result.push({ number, line: match[2] ?? "" });
   }
   return result;
+}
+
+async function readStack(store: string): Promise<readonly StackRow[]> {
+  return parseStack(await readTsv(join(store, "stack.tsv"), STACK_HEADER, 3));
+}
+
+async function saveStack(
+  store: string,
+  rows: readonly StackRow[]
+): Promise<void> {
+  await writeTsv(join(store, "stack.tsv"), STACK_HEADER, rows.map(stackCells));
+}
+
+const STACKER_ORDER = /^stacker: ([A-Za-z0-9][A-Za-z0-9._-]*)$/;
+
+/** The stacker is the id in the standing order "stacker: <id>". Any other caller, or one with no id, is refused. */
+async function requireStacker(
+  store: string,
+  actor: string | undefined
+): Promise<void> {
+  const holders = (await readStanding(store)).flatMap((item) => {
+    const match = STACKER_ORDER.exec(item.line);
+    return match === null ? [] : [match[1] ?? ""];
+  });
+  const [holder] = holders;
+  if (holder === undefined) {
+    throw new UserError(
+      'no stacker is recorded; add the standing order "stacker: <id>" first'
+    );
+  }
+  if (holders.length > 1) {
+    throw new UserError(
+      `preferences.md records ${holders.length} stackers (${holders.join(", ")}); keep one`
+    );
+  }
+  if (actor === undefined || actor.trim().length === 0) {
+    throw new UserError(
+      `only the stacker (${holder}) writes the stack; set --as ${holder} or ORCH_ACTOR`
+    );
+  }
+  if (actor !== holder) {
+    throw new UserError(
+      `${actor} is not the stacker; only ${holder} writes the stack`
+    );
+  }
 }
 
 function countValues(values: readonly string[]): Counts {
@@ -1537,6 +1616,43 @@ export function openStore(
         return readFrontier(store);
       },
     },
+    stack: {
+      add: async (params) => {
+        await beginWrite();
+        await requireStacker(store, options.actor);
+        const repo = resolve(requiredLine(params.repo, "repo directory"));
+        const branch = parseBranchName(params.branch, "branch");
+        const parent = parseBranchName(params.parent, "parent");
+        const rows = await readStack(store);
+        const tip = branchTip(repo, branch);
+        let parentTip: CommitSha;
+        if (params.parentTip === undefined) {
+          parentTip = mergeBase(repo, branchOrOriginTip(repo, parent), tip);
+        } else {
+          parentTip = parseCommitSha(params.parentTip, "parent tip");
+          if (!isAncestor(repo, parentTip, tip)) {
+            throw new UserError(
+              `parent tip ${parentTip} is not an ancestor of ${branch}`
+            );
+          }
+        }
+        const row: StackRow = { branch, parent, parentTip };
+        await saveStack(store, appendRow(rows, row));
+        return row;
+      },
+      show: async () => {
+        ensureOpen();
+        return readStack(store);
+      },
+      drop: async (params) => {
+        await beginWrite();
+        await requireStacker(store, options.actor);
+        const branch = parseBranchName(params.branch, "branch");
+        const { dropped, kept } = dropRow(await readStack(store), branch);
+        await saveStack(store, kept);
+        return dropped;
+      },
+    },
     standing: {
       show: async () => {
         ensureOpen();
@@ -1605,6 +1721,7 @@ export function openStore(
       await writeIfMissing(join(store, "gates.md"), "");
       await writeIfMissing(join(store, "preferences.md"), "");
       await writeIfMissing(join(store, "frontier.json"), "{}\n");
+      await writeIfMissing(join(store, "stack.tsv"), `${STACK_HEADER}\n`);
       return { store };
     },
     close: async () => {

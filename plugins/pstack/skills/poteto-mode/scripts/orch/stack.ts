@@ -125,9 +125,10 @@ export function appendRow(
 export function dropRow(
   rows: readonly StackRow[],
   branch: BranchName
-): readonly StackRow[] {
+): { readonly dropped: StackRow; readonly kept: readonly StackRow[] } {
   const index = rows.findIndex((row) => row.branch === branch);
-  if (index < 0) {
+  const dropped = rows[index];
+  if (dropped === undefined) {
     throw new UserError(`branch ${branch} is not in the stack`);
   }
   if (index !== 0 && index !== rows.length - 1) {
@@ -135,7 +136,7 @@ export function dropRow(
       `branch ${branch} is in the middle of the stack; drop the top or the bottom row only`
     );
   }
-  return rows.filter((row) => row.branch !== branch);
+  return { dropped, kept: rows.filter((row) => row !== dropped) };
 }
 
 /** Targets an open row may have: its parent, or what a merged parent had, because a forge moves the child when the parent lands. */

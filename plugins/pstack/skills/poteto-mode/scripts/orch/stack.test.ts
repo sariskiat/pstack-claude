@@ -146,8 +146,14 @@ describe("stack chain", () => {
   });
 
   it("drops the top or the bottom row and refuses the middle", () => {
-    expect(dropRow(CHAIN, TOP.branch)).toEqual([BOTTOM, MIDDLE]);
-    expect(dropRow(CHAIN, BOTTOM.branch)).toEqual([MIDDLE, TOP]);
+    expect(dropRow(CHAIN, TOP.branch)).toEqual({
+      dropped: TOP,
+      kept: [BOTTOM, MIDDLE],
+    });
+    expect(dropRow(CHAIN, BOTTOM.branch)).toEqual({
+      dropped: BOTTOM,
+      kept: [MIDDLE, TOP],
+    });
     expect(() => dropRow(CHAIN, MIDDLE.branch)).toThrow("in the middle");
     expect(() => dropRow(CHAIN, branch("nope"))).toThrow("is not in the stack");
   });

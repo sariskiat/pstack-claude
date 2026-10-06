@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { ensureDependenciesInstalled } from "../bootstrap.ts";
+import type { StackRow } from "./stack.ts";
 import {
   NotFoundError,
   UsageError,
@@ -34,6 +35,7 @@ interface Io {
 }
 
 interface GlobalOptions {
+  readonly as?: string;
   readonly store?: string;
   readonly json: boolean;
   readonly force: boolean;
@@ -79,9 +81,17 @@ interface GateResolveOptions {
   readonly answer: string;
 }
 
-interface FrontierSetOptions {
+interface RepoOptions {
   readonly repo?: string;
+}
+
+interface FrontierSetOptions extends RepoOptions {
   readonly prs?: readonly number[];
+}
+
+interface StackAddOptions extends RepoOptions {
+  readonly parent: string;
+  readonly parentTip?: string;
 }
 
 function message(error: unknown): string {
@@ -159,6 +169,10 @@ function compactRows<T>(
   return lines.join("\n");
 }
 
+function stackLine(row: StackRow): string {
+  return [row.branch, row.parent, row.parentTip].join("\t");
+}
+
 function frontierLine(value: Frontier): string {
   const prs =
     value.prs.length === 0
@@ -208,7 +222,7 @@ function storeDirectory(program: Command): string {
   return value;
 }
 
-function frontierRepo(options: FrontierSetOptions): string {
+function repoDirectory(options: RepoOptions): string {
   const value = options.repo;
   if (value === undefined || value.trim().length === 0) {
     throw new UsageError("set --repo <dir> or ORCH_REPO");
@@ -225,6 +239,7 @@ async function runStore<T>(
 ): Promise<void> {
   const options = program.opts<GlobalOptions>();
   const store = openStore(storeDirectory(program), {
+    actor: options.as,
     force: options.force,
     onLockStolen: (holder) =>
       io.stderr(`stealing store lock held by pid ${holder}\n`),
@@ -254,7 +269,7 @@ function requireSubcommand(program: Command): never {
 function createProgram(io: Io): Command {
   const program = new CommanderCommand("orch")
     .description("Plain-file orchestrate bookkeeping")
-    .usage("[--store <dir>] [--json] [--force] <command>")
+    .usage("[--store <dir>] [--as <id>] [--json] [--force] <command>")
     .configureOutput({ writeOut: io.stdout, writeErr: io.stderr })
     .exitOverride()
     .showHelpAfterError()
@@ -262,6 +277,11 @@ function createProgram(io: Io): Command {
     .addOption(
       new Option("--store <dir>", "store directory (or ORCH_STORE)").env(
         "ORCH_STORE"
+      )
+    )
+    .addOption(
+      new Option("--as <id>", "caller identity (or ORCH_ACTOR)").env(
+        "ORCH_ACTOR"
       )
     )
     .option("--json", "print complete rows as JSON", false)
@@ -492,7 +512,7 @@ function createProgram(io: Io): Command {
         io,
         (store) =>
           store.frontier.set({
-            repo: frontierRepo(options),
+            repo: repoDirectory(options),
             prs: options.prs,
           }),
         frontierLine
@@ -500,6 +520,57 @@ function createProgram(io: Io): Command {
     );
   leaf(frontier, "show", "show the frontier").action(() =>
     runStore(program, io, (store) => store.frontier.show(), frontierLine)
+  );
+
+  const stack = program
+    .command("stack")
+    .description("manage the stack of branches in stack.tsv")
+    .action(() => requireSubcommand(program));
+  leaf(stack, "add <branch>", "append a branch on top of the stack")
+    .requiredOption(
+      "--parent <branch>",
+      "parent branch: the top of the stack, or the trunk for the first row"
+    )
+    .option(
+      "--parent-tip <sha>",
+      "commit of the parent that the branch was built on (default: the merge base)"
+    )
+    .addOption(
+      new Option(
+        "--repo <dir>",
+        "repository directory (or ORCH_REPO)"
+      ).env("ORCH_REPO")
+    )
+    .action((branch: string, options: StackAddOptions) =>
+      runStore(
+        program,
+        io,
+        (store) =>
+          store.stack.add({
+            repo: repoDirectory(options),
+            branch,
+            parent: options.parent,
+            parentTip: options.parentTip,
+          }),
+        stackLine
+      )
+    );
+  leaf(stack, "show", "show the stack from the bottom to the top").action(() =>
+    runStore(
+      program,
+      io,
+      (store) => store.stack.show(),
+      (rows) => compactRows(rows, stackLine, "(no stack)", null)
+    )
+  );
+  leaf(stack, "drop <branch>", "remove the top or the bottom branch").action(
+    (branch: string) =>
+      runStore(
+        program,
+        io,
+        (store) => store.stack.drop({ branch }),
+        stackLine
+      )
   );
 
   leaf(program, "status", "render status.md and print a summary").action(() =>

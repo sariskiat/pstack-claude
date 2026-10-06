@@ -12,6 +12,7 @@ import {
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { StackRow } from "./stack.ts";
 import {
   NotFoundError,
   UserError,
@@ -167,6 +168,46 @@ function runCli(
   };
 }
 
+const plain = (row: StackRow): Record<string, string> => ({
+  branch: String(row.branch),
+  parent: String(row.parent),
+  parentTip: String(row.parentTip),
+});
+
+async function asActor<T>(
+  directory: string,
+  actor: string | undefined,
+  run: (store: Store) => Promise<T>
+): Promise<T> {
+  const store = openStore(directory, { actor });
+  try {
+    return await run(store);
+  } finally {
+    await store.close();
+  }
+}
+
+async function stackFixture(): Promise<{
+  readonly directory: string;
+  readonly repo: string;
+  readonly mainSha: string;
+  readonly mergedSha: string;
+  readonly closedSha: string;
+  readonly openSha: string;
+}> {
+  const directory = await makeDirectory();
+  await asActor(directory, undefined, async (store) => {
+    await store.init();
+    await store.standing.add({ line: "stacker: stacker-1" });
+  });
+  const stack = await makeGitStack(directory);
+  return {
+    directory,
+    ...stack,
+    mainSha: git({ repo: stack.repo, args: ["rev-parse", "main"] }),
+  };
+}
+
 afterEach(async () => {
   for (const store of handles.splice(0).reverse()) {
     await store.close();
@@ -202,6 +243,7 @@ describe("Store", () => {
       "inbox",
       "ledger.tsv",
       "preferences.md",
+      "stack.tsv",
       "units.tsv",
     ]);
 
@@ -550,6 +592,200 @@ describe("Store", () => {
   });
 });
 
+describe("stack", () => {
+  it("adds rows with the merge base as the parent tip and keeps stack.tsv plain", async () => {
+    const { directory, repo, mainSha, mergedSha, closedSha } =
+      await stackFixture();
+
+    await asActor(directory, "stacker-1", async (store) => {
+      expect(
+        plain(
+          await store.stack.add({
+            repo,
+            branch: "stack/merged",
+            parent: "main",
+          })
+        )
+      ).toEqual({
+        branch: "stack/merged",
+        parent: "main",
+        parentTip: mainSha,
+      });
+      await store.stack.add({
+        repo,
+        branch: "stack/closed",
+        parent: "stack/merged",
+      });
+      await store.stack.add({
+        repo,
+        branch: "stack/open",
+        parent: "stack/closed",
+      });
+    });
+
+    expect(
+      (
+        await asActor(directory, undefined, (store) => store.stack.show())
+      ).map(plain)
+    ).toEqual([
+      { branch: "stack/merged", parent: "main", parentTip: mainSha },
+      { branch: "stack/closed", parent: "stack/merged", parentTip: mergedSha },
+      { branch: "stack/open", parent: "stack/closed", parentTip: closedSha },
+    ]);
+    expect(await readFile(join(directory, "stack.tsv"), "utf8")).toBe(
+      `branch\tparent\tparent_tip
+stack/merged\tmain\t${mainSha}
+stack/closed\tstack/merged\t${mergedSha}
+stack/open\tstack/closed\t${closedSha}
+`
+    );
+  });
+
+  it("writes the stack only for the stacker named in the standing orders", async () => {
+    const directory = await makeDirectory();
+    const { repo } = await makeGitStack(directory);
+    const add = (actor: string | undefined) =>
+      asActor(directory, actor, (store) =>
+        store.stack.add({ repo, branch: "stack/merged", parent: "main" })
+      );
+    await asActor(directory, undefined, (store) => store.init());
+
+    await expect(add("stacker-1")).rejects.toThrow("no stacker is recorded");
+
+    await asActor(directory, undefined, (store) =>
+      store.standing.add({ line: "stacker: stacker-1" })
+    );
+    await expect(add(undefined)).rejects.toThrow(
+      "only the stacker (stacker-1) writes the stack; set --as stacker-1 or ORCH_ACTOR"
+    );
+    await expect(add("   ")).rejects.toThrow("only the stacker (stacker-1)");
+    await expect(add("worker-7")).rejects.toThrow(
+      "worker-7 is not the stacker; only stacker-1 writes the stack"
+    );
+    expect(
+      await asActor(directory, undefined, (store) => store.stack.show())
+    ).toEqual([]);
+
+    await expect(add("stacker-1")).resolves.toMatchObject({
+      branch: "stack/merged",
+    });
+    await expect(
+      asActor(directory, "worker-7", (store) =>
+        store.stack.drop({ branch: "stack/merged" })
+      )
+    ).rejects.toThrow("worker-7 is not the stacker");
+    expect(
+      await asActor(directory, "worker-7", (store) => store.stack.show())
+    ).toHaveLength(1);
+
+    await asActor(directory, undefined, (store) =>
+      store.standing.add({ line: "stacker: stacker-2" })
+    );
+    await expect(add("stacker-1")).rejects.toThrow(
+      "records 2 stackers (stacker-1, stacker-2)"
+    );
+  });
+
+  it("takes an explicit parent tip only when the branch is built on it", async () => {
+    const { directory, repo, mainSha, openSha } = await stackFixture();
+    const add = (parentTip: string) =>
+      asActor(directory, "stacker-1", (store) =>
+        store.stack.add({
+          repo,
+          branch: "stack/closed",
+          parent: "stack/merged",
+          parentTip,
+        })
+      );
+
+    await expect(add(openSha)).rejects.toThrow("is not an ancestor");
+    await expect(add("abc123")).rejects.toThrow("is not a full commit SHA");
+    await expect(add("f".repeat(40))).rejects.toThrow("git merge-base");
+    await expect(add(mainSha)).resolves.toMatchObject({ parentTip: mainSha });
+  });
+
+  it("refuses a missing branch, a bad name, and a row that is not on top of the stack", async () => {
+    const { directory, repo } = await stackFixture();
+    const add = (branch: string, parent: string) =>
+      asActor(directory, "stacker-1", (store) =>
+        store.stack.add({ repo, branch, parent })
+      );
+
+    await expect(add("no/such", "main")).rejects.toThrow(
+      "branch no/such does not exist"
+    );
+    await expect(add("--upload-pack=/tmp/pwn", "main")).rejects.toThrow(
+      "is not a branch name orch accepts"
+    );
+    await expect(add("stack/merged", "no/parent")).rejects.toThrow(
+      "exists neither locally nor on origin"
+    );
+    await add("stack/merged", "main");
+    await expect(add("stack/open", "main")).rejects.toThrow(
+      "must be one chain"
+    );
+    await expect(add("stack/merged", "main")).rejects.toThrow(
+      "lists branch stack/merged twice"
+    );
+    expect(
+      await asActor(directory, undefined, (store) => store.stack.show())
+    ).toHaveLength(1);
+  });
+
+  it("drops the top or the bottom row and refuses the middle", async () => {
+    const { directory, repo } = await stackFixture();
+    await asActor(directory, "stacker-1", async (store) => {
+      await store.stack.add({ repo, branch: "stack/merged", parent: "main" });
+      await store.stack.add({
+        repo,
+        branch: "stack/closed",
+        parent: "stack/merged",
+      });
+      await store.stack.add({
+        repo,
+        branch: "stack/open",
+        parent: "stack/closed",
+      });
+      await expect(
+        store.stack.drop({ branch: "stack/closed" })
+      ).rejects.toThrow("in the middle of the stack");
+      await expect(store.stack.drop({ branch: "nope" })).rejects.toThrow(
+        "is not in the stack"
+      );
+      expect(await store.stack.drop({ branch: "stack/open" })).toMatchObject({
+        branch: "stack/open",
+      });
+      expect(await store.stack.drop({ branch: "stack/merged" })).toMatchObject({
+        branch: "stack/merged",
+      });
+      expect((await store.stack.show()).map((row) => String(row.branch))).toEqual(
+        ["stack/closed"]
+      );
+    });
+  });
+
+  it("rejects a malformed stack.tsv", async () => {
+    const { directory } = await stackFixture();
+    const show = () =>
+      asActor(directory, undefined, (store) => store.stack.show());
+
+    await writeFile(join(directory, "stack.tsv"), "wrong\n");
+    await expect(show()).rejects.toThrow("stack.tsv has an invalid header");
+    await writeFile(
+      join(directory, "stack.tsv"),
+      "branch\tparent\tparent_tip\nonly\ttwo\n"
+    );
+    await expect(show()).rejects.toThrow("stack.tsv has a malformed row");
+    await writeFile(
+      join(directory, "stack.tsv"),
+      `branch\tparent\tparent_tip\na b\tmain\t${"a".repeat(40)}\n`
+    );
+    await expect(show()).rejects.toThrow("stack.tsv row 1 branch");
+    await rm(join(directory, "stack.tsv"));
+    await expect(show()).rejects.toThrow("run orch init");
+  });
+});
+
 describe("orch CLI", () => {
   it("prints commander help and rejects invalid parsing with exit 1", async () => {
     const help = runCli(["--help"]);
@@ -704,5 +940,63 @@ fi
     await store.status.render();
     const status = await readFile(join(directory, "status.md"), "utf8");
     expect(status).toContain("| a b\\|c | 7 | cafe f00d | OPEN |");
+  });
+});
+
+describe("orch stack CLI", () => {
+  it("adds, shows, and drops rows for the stacker and refuses a worker", async () => {
+    const { directory, repo, mainSha } = await stackFixture();
+    const base = ["--store", directory];
+    const add = (as: string | undefined, env?: Record<string, string>) =>
+      runCli(
+        [
+          ...base,
+          ...(as === undefined ? [] : ["--as", as]),
+          "stack",
+          "add",
+          "stack/merged",
+          "--parent",
+          "main",
+          "--repo",
+          repo,
+        ],
+        { PATH: process.env.PATH, ...env }
+      );
+
+    const refused = add("worker-7");
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("worker-7 is not the stacker");
+    expect(add(undefined).stderr).toContain("set --as stacker-1 or ORCH_ACTOR");
+
+    const added = add(undefined, { ORCH_ACTOR: "stacker-1" });
+    expect(added.code).toBe(0);
+    expect(added.stdout).toBe(`stack/merged\tmain\t${mainSha}\n`);
+
+    const shown = runCli([...base, "stack", "show"]);
+    expect(shown.stdout).toBe(`stack/merged\tmain\t${mainSha}\n`);
+    expect(JSON.parse(runCli([...base, "--json", "stack", "show"]).stdout)).toEqual([
+      { branch: "stack/merged", parent: "main", parentTip: mainSha },
+    ]);
+
+    const dropped = runCli([
+      ...base,
+      "--as",
+      "stacker-1",
+      "stack",
+      "drop",
+      "stack/merged",
+    ]);
+    expect(dropped.code).toBe(0);
+    expect(runCli([...base, "stack", "show"]).stdout).toBe("(no stack)\n");
+  });
+
+  it("needs --repo for add", async () => {
+    const { directory } = await stackFixture();
+    const result = runCli(
+      ["--store", directory, "--as", "stacker-1", "stack", "add", "x", "--parent", "main"],
+      { PATH: process.env.PATH }
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("set --repo <dir> or ORCH_REPO");
   });
 });
