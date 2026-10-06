@@ -36,7 +36,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   cli
     .command("inspect")
     .requiredOption(
-      "--repo <path>",
+      "--repo <owner/repo>",
       "owner/repo on GitHub, or the group/project path on --host"
     )
     .requiredOption(

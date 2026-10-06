@@ -367,3 +367,16 @@ it("the CLI reads --host github.com as the GitHub path, with the old repo rule",
     expect(nested.status).toBe(1);
     expect(nested.output.detail).toBe("--repo must be owner/repo");
   }));
+
+it("the CLI keeps its GitHub usage errors, which name the --repo shape owner/repo", () =>
+  fixture((_run, _file, dir) => {
+    const result = spawnSync(
+      process.execPath,
+      [join(dir, "entry.ts"), "inspect", "--pr", "1"],
+      { encoding: "utf8", timeout: 3000 }
+    );
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain(
+      "required option '--repo <owner/repo>' not specified"
+    );
+  }));
