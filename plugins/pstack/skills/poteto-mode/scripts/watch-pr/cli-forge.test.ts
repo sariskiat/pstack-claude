@@ -398,6 +398,82 @@ describe("watch-pr on a GitLab checkout", () => {
   });
 });
 
+describe("a number that is not a safe positive integer, read from a forge, ends in exit 7 and not in a crash", () => {
+  const BAD_NUMBERS = [0, -1, 2.5, 1e21, "7", null] as const;
+  const BAD_GH_NUMBERS = [0, 1e21, "7"] as const;
+  const invalid = (path: string, value: unknown) => ({
+    kind: "missing-key",
+    retryable: true,
+    detail: `invalid ${path}: ${JSON.stringify(value)}`,
+  });
+
+  it("GitLab: an iid in the list of open merge requests", async () => {
+    for (const iid of BAD_NUMBERS) {
+      const { reader } = glabReader({
+        mrList: [
+          {
+            iid,
+            source_branch: "topic",
+            target_branch: "main",
+            source_project_id: 42,
+            target_project_id: 42,
+          },
+        ],
+      });
+      const harness = runtimeFor(reader);
+      expect(await main(["--stack", "--pr", "1"], harness.runtime)).toBe(7);
+      expect(JSON.parse(harness.stdout.join("")).blocker.failure).toMatchObject(
+        invalid("open merge requests[0].iid", iid)
+      );
+    }
+  });
+
+  const listed = (number: unknown) =>
+    JSON.stringify([
+      {
+        number,
+        headRefName: "topic",
+        baseRefName: "main",
+        headRepository: null,
+        headRepositoryOwner: null,
+      },
+    ]);
+
+  it("GitHub: a number in the list of open pull requests", async () => {
+    for (const number of BAD_GH_NUMBERS)
+      await inSandbox({ gh: `echo '${listed(number)}'` }, async (sandbox) => {
+        const harness = runtimeFor({ checkout: sandbox.checkout(null) });
+        expect(
+          await main(
+            ["--stack", "--owner", "o", "--repo", "r", "--pr", "1"],
+            harness.runtime
+          )
+        ).toBe(7);
+        expect(
+          JSON.parse(harness.stdout.join("")).blocker.failure
+        ).toMatchObject(invalid("open PRs[0].number", number));
+      });
+  });
+
+  it("GitHub: the number of the pull request for the current branch", async () => {
+    for (const number of BAD_GH_NUMBERS)
+      await inSandbox(
+        {
+          gh: `echo '${JSON.stringify({ number, url: "https://github.com/o/r/pull/1" })}'`,
+        },
+        async (sandbox) => {
+          const harness = runtimeFor({
+            checkout: sandbox.checkout("https://github.com/o/r"),
+          });
+          expect(await main([], harness.runtime)).toBe(7);
+          expect(
+            JSON.parse(harness.stdout.join("")).blocker.failure
+          ).toMatchObject(invalid("current PR.number", number));
+        }
+      );
+  });
+});
+
 describe("GitLab output names no GitHub, and GitHub output keeps its words", () => {
   const stamp = {
     schemaVersion: 1,

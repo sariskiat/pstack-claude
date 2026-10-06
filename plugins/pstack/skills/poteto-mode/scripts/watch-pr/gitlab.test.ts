@@ -1201,6 +1201,40 @@ describe("recorded merge requests through the unchanged policy", () => {
     ).toMatchObject({ kind: "snapshot-changed", retryable: true });
   });
 
+  test("a pipeline for the head commit on page two of the merge request pipelines still holds the merge request back", async () => {
+    const red = fixture("mr-red.json");
+    const listed = { ref: red.source_branch, status: "failed" };
+    const older = Array.from({ length: 100 }, (_, n) => ({
+      ...listed,
+      id: 1000 + n,
+      sha: "b".repeat(40),
+    }));
+    const { reader: glab, calls } = reader({
+      mr: { ...red, head_pipeline: null },
+      approvals: fixture("approvals-green.json"),
+      pipelines: [...older, { ...listed, id: 8, sha: red.sha }],
+    });
+    const error = await rejection(
+      readSnapshot({
+        reader: glab,
+        context: context(red.iid),
+        pendingHistory: "include",
+        allowDraft: false,
+      })
+    );
+    expect(error.failure).toMatchObject({
+      kind: "snapshot-changed",
+      retryable: true,
+    });
+    const pageCalls = calls
+      .map((argv) => argv[4])
+      .filter((endpoint) => endpoint.includes("/pipelines?"));
+    expect(pageCalls.map((e) => /[?&]page=(\d+)/.exec(e)?.[1])).toEqual([
+      "1",
+      "2",
+    ]);
+  });
+
   test("a null head pipeline with pipelines only for older commits is no CI", async () => {
     const red = fixture("mr-red.json");
     expect(
