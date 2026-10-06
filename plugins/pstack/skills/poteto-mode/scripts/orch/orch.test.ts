@@ -641,6 +641,20 @@ stack/open\tstack/closed\t${closedSha}
     );
   });
 
+  it("records the commit the branch was built on after the parent has moved on", async () => {
+    const { directory, repo, mainSha } = await stackFixture();
+    git({ repo, args: ["checkout", "main"] });
+    await writeFile(join(repo, "later.txt"), "later\n");
+    git({ repo, args: ["add", "."] });
+    git({ repo, args: ["commit", "-m", "later"] });
+    expect(git({ repo, args: ["rev-parse", "main"] })).not.toBe(mainSha);
+
+    const row = await asActor(directory, "stacker-1", (store) =>
+      store.stack.add({ repo, branch: "stack/merged", parent: "main" })
+    );
+    expect(String(row.parentTip)).toBe(mainSha);
+  });
+
   it("writes the stack only for the stacker named in the standing orders", async () => {
     const directory = await makeDirectory();
     const { repo } = await makeGitStack(directory);
